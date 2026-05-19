@@ -186,6 +186,7 @@ class DashboardApp:
 
         self._build_dashboard_tab()
         self._build_graph_tab()
+        self._build_fanctrl_tab()
         self._build_settings_tab()
 
     def _build_dashboard_tab(self):
@@ -271,6 +272,180 @@ class DashboardApp:
         self.mpl_canvas.draw()
         self.mpl_canvas.get_tk_widget().pack(fill='both', expand=True, padx=4, pady=4)
 
+    def _build_fanctrl_tab(self):
+        fc = self.monitor.fan_ctrl          # shorthand
+        tab = tk.Frame(self.nb, bg=BG)
+        self.nb.add(tab, text='  Fan Control  ')
+
+        canvas = tk.Canvas(tab, bg=BG, highlightthickness=0)
+        scroll = tk.Scrollbar(tab, orient='vertical', command=canvas.yview)
+        canvas.configure(yscrollcommand=scroll.set)
+        scroll.pack(side='right', fill='y')
+        canvas.pack(side='left', fill='both', expand=True)
+        inner = tk.Frame(canvas, bg=BG)
+        win_id = canvas.create_window((0, 0), window=inner, anchor='nw')
+        inner.bind('<Configure>',
+                   lambda e: canvas.configure(scrollregion=canvas.bbox('all')))
+        canvas.bind('<Configure>',
+                    lambda e: canvas.itemconfig(win_id, width=e.width))
+
+        pad = dict(padx=36, pady=0, anchor='w')
+
+        # ── Status card ────────────────────────────────────────────
+        tk.Frame(inner, bg=BG, height=20).pack()
+        status_outer = tk.Frame(inner, bg=BORDER, padx=1, pady=1)
+        status_outer.pack(fill='x', padx=36, pady=(0, 16))
+        status_card = tk.Frame(status_outer, bg=CARD, padx=16, pady=14)
+        status_card.pack(fill='both', expand=True)
+
+        row1 = tk.Frame(status_card, bg=CARD)
+        row1.pack(fill='x')
+        tk.Label(row1, text='Tool:', bg=CARD, fg=DIM,
+                 font=('SF Pro Display', 11)).pack(side='left')
+        if fc.available:
+            tool_txt = 'smcFanControl ready'
+            tool_clr = GREEN
+        else:
+            tool_txt = 'smcFanControl not installed'
+            tool_clr = RED
+        self.fc_tool_lbl = tk.Label(row1, text=tool_txt, bg=CARD, fg=tool_clr,
+                                    font=('SF Pro Display', 11, 'bold'))
+        self.fc_tool_lbl.pack(side='left', padx=8)
+
+        self.fc_mode_lbl = tk.Label(status_card, text='Mode: Auto',
+                                    bg=CARD, fg=DIM,
+                                    font=('SF Pro Display', 10))
+        self.fc_mode_lbl.pack(anchor='w', pady=(4, 0))
+
+        self.fc_status_lbl = tk.Label(status_card, text='',
+                                      bg=CARD, fg=ACCENT,
+                                      font=('SF Pro Display', 10))
+        self.fc_status_lbl.pack(anchor='w')
+
+        # ── Auto-boost section ─────────────────────────────────────
+        tk.Label(inner, text='Auto-Boost', bg=BG, fg=TEXT,
+                 font=('SF Pro Display', 13, 'bold')).pack(**pad)
+        tk.Label(inner,
+                 text='Automatically raise fan speed when temperature is high.',
+                 bg=BG, fg=DIM, font=('SF Pro Display', 10)).pack(**pad)
+        tk.Frame(inner, bg=BG, height=8).pack()
+
+        self.fc_auto_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(inner, text='Enable auto-boost',
+                       variable=self.fc_auto_var, bg=BG, fg=TEXT,
+                       selectcolor=CARD, activebackground=BG,
+                       font=('SF Pro Display', 12),
+                       command=self._fc_apply_auto).pack(**pad)
+
+        boost_row = tk.Frame(inner, bg=BG)
+        boost_row.pack(anchor='w', padx=36, pady=6)
+        tk.Label(boost_row, text='Boost when temp >', bg=BG, fg=DIM,
+                 font=('SF Pro Display', 11)).pack(side='left')
+        self.fc_thresh_var = tk.DoubleVar(value=75.0)
+        tk.Scale(boost_row, from_=55, to=90, variable=self.fc_thresh_var,
+                 orient='horizontal', length=160, bg=CARD, fg=TEXT,
+                 troughcolor='#21262d', highlightthickness=0,
+                 activebackground=ORANGE,
+                 command=self._fc_apply_auto).pack(side='left', padx=6)
+        self.fc_thresh_lbl = tk.Label(boost_row, text='75C', bg=BG, fg=ORANGE,
+                                      font=('SF Pro Display', 11, 'bold'))
+        self.fc_thresh_lbl.pack(side='left')
+
+        rpm_row = tk.Frame(inner, bg=BG)
+        rpm_row.pack(anchor='w', padx=36, pady=6)
+        tk.Label(rpm_row, text='Boost to RPM:', bg=BG, fg=DIM,
+                 font=('SF Pro Display', 11)).pack(side='left')
+        self.fc_boost_rpm_var = tk.IntVar(value=4000)
+        tk.Scale(rpm_row, from_=1200, to=6200, variable=self.fc_boost_rpm_var,
+                 orient='horizontal', length=160, bg=CARD, fg=TEXT,
+                 troughcolor='#21262d', highlightthickness=0,
+                 activebackground=BLUE, resolution=100,
+                 command=self._fc_apply_auto).pack(side='left', padx=6)
+        self.fc_boost_rpm_lbl = tk.Label(rpm_row, text='4000 RPM', bg=BG, fg=BLUE,
+                                         font=('SF Pro Display', 11, 'bold'))
+        self.fc_boost_rpm_lbl.pack(side='left')
+
+        tk.Frame(inner, bg=BORDER, height=1, width=500).pack(anchor='w', padx=36, pady=14)
+
+        # ── Manual control section ─────────────────────────────────
+        tk.Label(inner, text='Manual Fan Speed', bg=BG, fg=TEXT,
+                 font=('SF Pro Display', 13, 'bold')).pack(**pad)
+        tk.Label(inner,
+                 text='Set minimum fan RPM directly. "Auto" hands control back to macOS.',
+                 bg=BG, fg=DIM, font=('SF Pro Display', 10)).pack(**pad)
+        tk.Frame(inner, bg=BG, height=10).pack()
+
+        # Preset buttons
+        preset_row = tk.Frame(inner, bg=BG)
+        preset_row.pack(anchor='w', padx=36, pady=4)
+        self._preset_btns = {}
+        for name, rpm in [('Auto', 0), ('Eco', 1200),
+                          ('Normal', 2500), ('Performance', 4000), ('Max', 6200)]:
+            btn = tk.Button(
+                preset_row, text='{}\n{}'.format(name, 'auto' if rpm == 0 else '{} RPM'.format(rpm)),
+                bg=CARD, fg=TEXT, relief='flat', padx=12, pady=8,
+                font=('SF Pro Display', 10),
+                highlightbackground=BORDER, highlightthickness=1,
+                activebackground=ACCENT, activeforeground=BG,
+                command=lambda n=name: self._fc_preset(n))
+            btn.pack(side='left', padx=(0, 8))
+            self._preset_btns[name] = btn
+
+        # Manual slider
+        man_row = tk.Frame(inner, bg=BG)
+        man_row.pack(anchor='w', padx=36, pady=10)
+        tk.Label(man_row, text='Custom RPM:', bg=BG, fg=DIM,
+                 font=('SF Pro Display', 11)).pack(side='left')
+        self.fc_man_rpm_var = tk.IntVar(value=2500)
+        tk.Scale(man_row, from_=0, to=6200, variable=self.fc_man_rpm_var,
+                 orient='horizontal', length=220, bg=CARD, fg=TEXT,
+                 troughcolor='#21262d', highlightthickness=0,
+                 activebackground=ACCENT, resolution=100).pack(side='left', padx=6)
+        self.fc_man_rpm_lbl = tk.Label(man_row, text='2500 RPM', bg=BG, fg=ACCENT,
+                                       font=('SF Pro Display', 11, 'bold'))
+        self.fc_man_rpm_lbl.pack(side='left')
+        self.fc_man_rpm_var.trace('w', self._fc_update_man_lbl)
+
+        # Apply / Reset buttons
+        btn_row = tk.Frame(inner, bg=BG)
+        btn_row.pack(anchor='w', padx=36, pady=8)
+        tk.Button(btn_row, text='Apply', bg=ACCENT, fg=BG, relief='flat',
+                  padx=20, pady=7, font=('SF Pro Display', 11, 'bold'),
+                  activebackground='#79c0ff', activeforeground=BG,
+                  command=self._fc_apply_manual).pack(side='left', padx=(0, 10))
+        tk.Button(btn_row, text='Reset to Auto', bg=CARD, fg=TEXT, relief='flat',
+                  padx=20, pady=7, font=('SF Pro Display', 11),
+                  highlightbackground=BORDER, highlightthickness=1,
+                  command=self._fc_reset).pack(side='left')
+
+        # ── Install section (shown only when tool missing) ─────────
+        tk.Frame(inner, bg=BORDER, height=1, width=500).pack(anchor='w', padx=36, pady=14)
+        install_frame = tk.Frame(inner, bg=BG)
+        install_frame.pack(anchor='w', padx=36, pady=4)
+
+        if not fc.available:
+            tk.Label(install_frame,
+                     text='smcFanControl is required for fan speed control on Intel Macs.',
+                     bg=BG, fg=DIM, font=('SF Pro Display', 11)).pack(anchor='w')
+            tk.Label(install_frame,
+                     text='Install it automatically with Homebrew:',
+                     bg=BG, fg=DIM, font=('SF Pro Display', 11)).pack(anchor='w', pady=(4, 8))
+            tk.Button(install_frame,
+                      text='Install smcFanControl  (brew --cask)',
+                      bg=GREEN, fg=BG, relief='flat', padx=18, pady=8,
+                      font=('SF Pro Display', 11, 'bold'),
+                      activebackground='#3fb950',
+                      command=self._fc_install).pack(anchor='w')
+            self.fc_install_lbl = tk.Label(install_frame, text='', bg=BG, fg=DIM,
+                                           font=('SF Pro Display', 10))
+            self.fc_install_lbl.pack(anchor='w', pady=6)
+
+        tk.Frame(inner, bg=BG, height=24).pack()   # bottom padding
+
+        # Disable controls if tool not available
+        if not fc.available:
+            self._fc_set_controls_state('disabled')
+
     def _build_settings_tab(self):
         tab = tk.Frame(self.nb, bg=BG)
         self.nb.add(tab, text='  Settings  ')
@@ -311,6 +486,125 @@ class DashboardApp:
                                      font=('SF Pro Display', 11), justify='left')
         self.sys_info_lbl.pack(anchor='w')
         self._refresh_sys_info()
+
+    # ── Fan Control logic ─────────────────────────────────────────────────────
+
+    def _fc_set_controls_state(self, state):
+        """Enable or disable all fan control interactive widgets."""
+        for w in [self.fc_man_rpm_var]:
+            pass  # StringVar — skip
+        try:
+            for btn in self._preset_btns.values():
+                btn.configure(state=state)
+        except Exception:
+            pass
+
+    def _fc_apply_auto(self, *_):
+        fc = self.monitor.fan_ctrl
+        fc.auto_boost   = self.fc_auto_var.get()
+        fc.boost_thresh = self.fc_thresh_var.get()
+        fc.boost_rpm    = self.fc_boost_rpm_var.get()
+        self.fc_thresh_lbl.configure(
+            text='{:.0f}C'.format(fc.boost_thresh))
+        self.fc_boost_rpm_lbl.configure(
+            text='{} RPM'.format(fc.boost_rpm))
+
+    def _fc_update_man_lbl(self, *_):
+        self.fc_man_rpm_lbl.configure(
+            text='{} RPM'.format(self.fc_man_rpm_var.get()))
+
+    def _fc_preset(self, name):
+        fc = self.monitor.fan_ctrl
+        if not fc.available:
+            self._fc_show_status('Not available — install smcFanControl first', RED)
+            return
+        ok, msg = fc.apply_preset(name)
+        if ok:
+            self._fc_show_status('Preset: {}'.format(name), GREEN)
+            self.fc_mode_lbl.configure(
+                text='Mode: Auto' if name == 'Auto' else 'Mode: Manual ({})'.format(name))
+        else:
+            self._fc_show_status('Error: ' + msg[:50], RED)
+
+    def _fc_apply_manual(self):
+        fc = self.monitor.fan_ctrl
+        if not fc.available:
+            self._fc_show_status('Not available — install smcFanControl first', RED)
+            return
+        rpm = self.fc_man_rpm_var.get()
+        ok, msg = fc.set_min_rpm(rpm)
+        if ok:
+            self._fc_show_status('Set to {} RPM'.format(rpm), GREEN)
+            self.fc_mode_lbl.configure(
+                text='Mode: Manual ({} RPM min)'.format(rpm))
+        else:
+            self._fc_show_status('Error: ' + msg[:50], RED)
+
+    def _fc_reset(self):
+        fc = self.monitor.fan_ctrl
+        if not fc.available:
+            self._fc_show_status('Not available — install smcFanControl first', RED)
+            return
+        ok, _ = fc.reset_auto()
+        if ok:
+            self._fc_show_status('Reset to Auto', GREEN)
+            self.fc_mode_lbl.configure(text='Mode: Auto')
+        else:
+            self._fc_show_status('Reset failed', RED)
+
+    def _fc_show_status(self, msg, color=ACCENT):
+        try:
+            self.fc_status_lbl.configure(text=msg, fg=color)
+        except Exception:
+            pass
+
+    def _fc_install(self):
+        """Install smcFanControl via Homebrew in background."""
+        try:
+            self.fc_install_lbl.configure(
+                text='Installing... this may take a minute.', fg=YELLOW)
+        except Exception:
+            pass
+
+        def on_done(ok, msg):
+            def _update():
+                fc = self.monitor.fan_ctrl
+                if ok and fc.available:
+                    try:
+                        self.fc_tool_lbl.configure(
+                            text='smcFanControl ready', fg=GREEN)
+                        self.fc_install_lbl.configure(
+                            text='Installed! Restart the app to enable all controls.',
+                            fg=GREEN)
+                        self._fc_set_controls_state('normal')
+                    except Exception:
+                        pass
+                else:
+                    err = msg[-80:] if msg else 'Unknown error'
+                    try:
+                        self.fc_install_lbl.configure(
+                            text='Install failed: ' + err, fg=RED)
+                    except Exception:
+                        pass
+            self.root.after(0, _update)
+
+        self.monitor.fan_ctrl.install_brew(on_done=on_done)
+
+    def _fc_update_loop(self):
+        """Update fan control status label from monitor loop."""
+        fc = self.monitor.fan_ctrl
+        try:
+            if fc._boosted:
+                self.fc_mode_lbl.configure(
+                    text='Mode: Auto-Boosted ({} RPM)'.format(fc.boost_rpm))
+            elif fc.auto_boost:
+                self.fc_mode_lbl.configure(text='Mode: Auto-Boost (watching)')
+            with fc._lock:
+                msg = fc.status_msg
+            if msg:
+                self.fc_status_lbl.configure(text=msg)
+        except Exception:
+            pass
 
     # ── Logic ─────────────────────────────────────────────────────────────────
 
@@ -386,8 +680,12 @@ class DashboardApp:
             text=f"Last updated: {data.get('timestamp', '—')}  ·  Interval: 2s"
         )
 
+        # Fan control status update
+        if self.nb.index('current') == 2:
+            self._fc_update_loop()
+
         # Update graphs only when that tab is visible
-        if self.nb.index('current') == 1 and HAS_MPL:
+        if self.nb.index('current') == 3 and HAS_MPL:
             self._update_graphs(hist)
 
         self.root.after(2000, self._update_loop)

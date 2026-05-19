@@ -4,6 +4,7 @@ import threading
 import json
 import re
 import os
+import shutil
 from collections import deque
 from datetime import datetime
 
@@ -11,13 +12,130 @@ STATE_FILE = '/tmp/fancooler_state.json'
 HISTORY_SIZE = 60
 
 
+# ── Fan Controller ────────────────────────────────────────────────────────────
+
+class FanController:
+    """
+    Controls Mac fan speed via smcFanControl CLI (Intel Macs).
+    Supports auto-boost: when temp > threshold, raise min RPM automatically.
+    """
+
+    # Ordered list of tool locations to try
+    TOOL_CANDIDATES = [
+        '/Applications/smcFanControl.app/Contents/Resources/smcFanControl',
+        '/usr/local/bin/smcFanControl',
+        '/opt/homebrew/bin/smcFanControl',
+    ]
+
+    PRESETS = {
+        'Auto':        0,
+        'Eco':         1200,
+        'Normal':      2500,
+        'Performance': 4000,
+        'Max':         6200,
+    }
+
+    def __init__(self):
+        self.tool_path   = self._detect_tool()
+        self.auto_boost  = False
+        self.boost_thresh = 75.0   # °C — start boosting above this
+        self.boost_rpm   = 4000    # RPM to set when boosting
+        self._boosted    = False
+        self._lock       = threading.Lock()
+        self.status_msg  = ''      # last action result message
+
+    def _detect_tool(self):
+        for p in self.TOOL_CANDIDATES:
+            if os.path.isfile(p) and os.access(p, os.X_OK):
+                return p
+        found = shutil.which('smcFanControl')
+        return found  # None if not found
+
+    @property
+    def available(self):
+        return self.tool_path is not None
+
+    def set_min_rpm(self, rpm, fan_nr=0):
+        """Set minimum fan RPM for fan_nr.  Returns (ok, message)."""
+        if not self.available:
+            return False, 'smcFanControl not installed'
+        rpm = max(0, int(rpm))
+        try:
+            r = subprocess.Popen(
+                [self.tool_path,
+                 '--setMinRpm', str(rpm),
+                 '--startFanNr', str(fan_nr)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            out, err = r.communicate(timeout=5)
+            ok = r.returncode == 0
+            msg = (out + err).decode('utf-8', 'ignore').strip()
+            with self._lock:
+                self.status_msg = ('Boosted to {} RPM'.format(rpm)
+                                   if ok else 'Error: ' + msg[:60])
+            return ok, msg
+        except Exception as e:
+            return False, str(e)
+
+    def reset_auto(self):
+        """Reset fan to macOS automatic control (min RPM = 0)."""
+        ok, msg = self.set_min_rpm(0)
+        if ok:
+            with self._lock:
+                self.status_msg = 'Reset to Auto'
+                self._boosted = False
+        return ok, msg
+
+    def apply_preset(self, name):
+        rpm = self.PRESETS.get(name, 0)
+        if name == 'Auto':
+            return self.reset_auto()
+        return self.set_min_rpm(rpm)
+
+    def auto_check(self, temp):
+        """Call from monitor loop — auto-boost fan if temp is high."""
+        if not self.auto_boost or not self.available:
+            return
+        if temp >= self.boost_thresh and not self._boosted:
+            ok, _ = self.set_min_rpm(self.boost_rpm)
+            if ok:
+                with self._lock:
+                    self._boosted = True
+        elif temp < (self.boost_thresh - 5) and self._boosted:
+            ok, _ = self.reset_auto()
+
+    def install_brew(self, on_done=None):
+        """Run brew install --cask smcfancontrol in background thread."""
+        def _run():
+            try:
+                r = subprocess.Popen(
+                    ['brew', 'install', '--cask', 'smcfancontrol'],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+                out, err = r.communicate(timeout=300)
+                ok = r.returncode == 0
+                # Re-detect after install
+                self.tool_path = self._detect_tool()
+                if on_done:
+                    on_done(ok, (out + err).decode('utf-8', 'ignore').strip())
+            except Exception as e:
+                if on_done:
+                    on_done(False, str(e))
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+
+
+# ── System Monitor ────────────────────────────────────────────────────────────
+
 class SystemMonitor:
     def __init__(self):
         self.history = {
-            'cpu': deque(maxlen=HISTORY_SIZE),
+            'cpu':  deque(maxlen=HISTORY_SIZE),
             'temp': deque(maxlen=HISTORY_SIZE),
-            'fan': deque(maxlen=HISTORY_SIZE),
-            'mem': deque(maxlen=HISTORY_SIZE),
+            'fan':  deque(maxlen=HISTORY_SIZE),
+            'mem':  deque(maxlen=HISTORY_SIZE),
         }
         self.current = {
             'cpu': 0.0,
@@ -36,6 +154,8 @@ class SystemMonitor:
         self.on_high_temp = None
         self.temp_alert = 80.0
         self._last_alert_time = 0
+
+        self.fan_ctrl = FanController()  # fan controller instance
 
     def start(self):
         psutil.cpu_percent(interval=None)  # warm-up call
@@ -81,6 +201,9 @@ class SystemMonitor:
 
         self._save_state()
 
+        # Auto fan boost check
+        self.fan_ctrl.auto_check(temp)
+
         if self.on_high_temp and temp >= self.temp_alert:
             if t.time() - self._last_alert_time > 60:
                 self._last_alert_time = t.time()
@@ -96,17 +219,18 @@ class SystemMonitor:
                         return temps[key][0].current, 'psutil'
                 first_key = next(iter(temps))
                 if temps[first_key]:
-                    return temps[first_key][0].current, f'psutil:{first_key}'
+                    return temps[first_key][0].current, 'psutil:{}'.format(first_key)
         except Exception:
             pass
 
         # Method 2: osx-cpu-temp (brew install osx-cpu-temp)
         try:
-            r = subprocess.run(['osx-cpu-temp'],
-                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                               timeout=2)
+            r = subprocess.Popen(['osx-cpu-temp'],
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            out, _ = r.communicate(timeout=2)
             if r.returncode == 0:
-                m = re.search(r'(\d+\.?\d*)\s*\xb0?C', r.stdout.decode('utf-8', errors='ignore'))
+                m = re.search(r'(\d+\.?\d*)\s*\xb0?C',
+                              out.decode('utf-8', errors='ignore'))
                 if m:
                     return float(m.group(1)), 'osx-cpu-temp'
         except Exception:
@@ -114,12 +238,12 @@ class SystemMonitor:
 
         # Method 3: istats (sudo gem install iStats)
         try:
-            r = subprocess.run(['istats', 'cpu', '--value-only'],
-                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                               timeout=2)
-            out = r.stdout.decode('utf-8', errors='ignore').strip()
-            if r.returncode == 0 and out:
-                return float(out), 'istats'
+            r = subprocess.Popen(['istats', 'cpu', '--value-only'],
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            out, _ = r.communicate(timeout=2)
+            val = out.decode('utf-8', errors='ignore').strip()
+            if r.returncode == 0 and val:
+                return float(val), 'istats'
         except Exception:
             pass
 
@@ -129,16 +253,18 @@ class SystemMonitor:
         return temp, 'estimated'
 
     def _read_fan(self, temp):
-        # Method 1: psutil fans
-        try:
-            fans = psutil.sensors_fans()
-            if fans:
-                for entries in fans.values():
-                    if entries:
-                        high = entries[0].high or 6000
-                        return int(entries[0].current), int(high), 'psutil'
-        except Exception:
-            pass
+        # Try smcFanControl for actual reading
+        if self.fan_ctrl.available:
+            try:
+                r = subprocess.Popen(
+                    [self.fan_ctrl.tool_path, '--getFanRpm', '--startFanNr', '0'],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                out, _ = r.communicate(timeout=2)
+                m = re.search(r'(\d+)', out.decode('utf-8', 'ignore'))
+                if m:
+                    return int(m.group(1)), 6200, 'smcFanControl'
+            except Exception:
+                pass
 
         # Estimate from temperature
         if temp < 45:
@@ -149,7 +275,6 @@ class SystemMonitor:
             speed = int(2400 + (temp - 60) * 120)
         else:
             speed = int(4200 + (temp - 75) * 144)
-
         return min(speed, 6000), 6000, 'estimated'
 
     def get_current(self):
