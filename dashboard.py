@@ -181,7 +181,7 @@ def _set_dock_icon():
     try:
         from AppKit import NSApplication, NSImage
         icns = os.path.expanduser(
-            '~/Desktop/FanCooler.app/Contents/Resources/AppIcon.icns')
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), 'AppIcon.icns'))
         icon = NSImage.alloc().initWithContentsOfFile_(icns)
         if icon:
             NSApplication.sharedApplication().setApplicationIconImage_(icon)
