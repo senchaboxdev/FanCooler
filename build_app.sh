@@ -1,29 +1,40 @@
 #!/bin/bash
-# build_app.sh — build FanCooler.app next to this script (or on Desktop)
-# Called by setup.sh or run directly: bash build_app.sh
-
+# build_app.sh — builds a self-contained FanCooler.app (universal: Intel + Apple Silicon)
+# Usage: bash build_app.sh
 set -e
 PROJECT="$(cd "$(dirname "$0")" && pwd)"
-APP="$(dirname "$PROJECT")/FanCooler.app"   # sibling of FanCooler/ folder
+APP="$(dirname "$PROJECT")/FanCooler.app"
 echo "Building $APP ..."
 
-# ── Find Python (for icon generation) ────────────────────────────────────────
+# Find Python (for icon generation only)
 PYTHON=""
 for c in python3 python3.12 python3.11 python3.10 python3.9 python3.8 python3.6; do
     if command -v "$c" &>/dev/null; then PYTHON=$(command -v "$c"); break; fi
 done
 [ -z "$PYTHON" ] && { echo "ERROR: Python 3 not found"; exit 1; }
 
-# ── Bundle structure ──────────────────────────────────────────────────────────
+# Bundle structure
 mkdir -p "$APP/Contents/MacOS"
 mkdir -p "$APP/Contents/Resources"
 
-# ── Compile native launcher binary ────────────────────────────────────────────
-echo "  Compiling launcher..."
-cc -o "$APP/Contents/MacOS/FanCooler" "$PROJECT/launcher.c"
+# Compile universal binary launcher (Intel + Apple Silicon)
+echo "  Compiling launcher (universal)..."
+cc -arch x86_64 -arch arm64 \
+   -o "$APP/Contents/MacOS/FanCooler" \
+   "$PROJECT/launcher.c" \
+   || cc -o "$APP/Contents/MacOS/FanCooler" "$PROJECT/launcher.c"  # fallback single-arch
 chmod +x "$APP/Contents/MacOS/FanCooler"
 
-# ── Info.plist ────────────────────────────────────────────────────────────────
+# Copy Python source into bundle
+echo "  Copying Python sources into bundle..."
+for f in dashboard.py monitor.py menubar.py smc_write.py; do
+    [ -f "$PROJECT/$f" ] && cp "$PROJECT/$f" "$APP/Contents/Resources/"
+done
+
+# Copy smc_tool (Intel fan control binary — won't run on Apple Silicon, that's ok)
+[ -f "$PROJECT/smc_tool" ] && cp "$PROJECT/smc_tool" "$APP/Contents/Resources/"
+
+# Info.plist
 cat > "$APP/Contents/Info.plist" << 'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -46,7 +57,7 @@ cat > "$APP/Contents/Info.plist" << 'PLIST'
 </plist>
 PLIST
 
-# ── Icon ──────────────────────────────────────────────────────────────────────
+# Build icon
 echo "  Building icon..."
 ICONSET="/tmp/FanCooler_$$.iconset"
 mkdir -p "$ICONSET"
@@ -61,9 +72,8 @@ done
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
 rm -rf "$ICONSET"
 
-# ── Remove quarantine ─────────────────────────────────────────────────────────
 xattr -cr "$APP"
-
 echo ""
-echo "Done!  $APP"
-echo "Double-click it to launch, or drag to Dock."
+echo "Done! $APP"
+echo "Copy this .app to any Mac. Target machine needs Python 3 + packages:"
+echo "  pip3 install psutil matplotlib rumps pyobjc-framework-Cocoa"

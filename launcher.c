@@ -1,10 +1,10 @@
 /*
- * launcher.c — FanCooler.app native binary launcher
+ * launcher.c — FanCooler.app self-contained launcher (universal binary)
  *
- * • Detects project path relative to FanCooler.app (no hardcoded paths)
- * • Tries common Python locations; falls back to PATH
- * • Passes argv[0] = this binary so NSBundle finds FanCooler.app
- *   → single Dock icon, no Python icon
+ * Python files live inside the bundle at Contents/Resources/.
+ * No external source folder needed — just copy FanCooler.app.
+ *
+ * Compiled as universal binary: runs on Intel AND Apple Silicon (M1/M2/M3/M4).
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,26 +19,23 @@ static void safe_dirname(const char *path, char *out, size_t sz) {
 }
 
 int main(int argc, char *argv[]) {
-    /* argv[0] = /some/path/FanCooler.app/Contents/MacOS/FanCooler
-       Walk up 3 levels → directory containing FanCooler.app */
-    char d1[4096], d2[4096], d3[4096], parent[4096];
-    safe_dirname(argv[0], d1, sizeof(d1));   /* .../Contents/MacOS */
-    safe_dirname(d1, d2, sizeof(d2));         /* .../Contents       */
-    safe_dirname(d2, d3, sizeof(d3));         /* .../FanCooler.app  */
-    safe_dirname(d3, parent, sizeof(parent)); /* .../Desktop        */
-
-    char script[4096];
-    snprintf(script, sizeof(script), "%s/FanCooler/dashboard.py", parent);
+    /* argv[0] = .../FanCooler.app/Contents/MacOS/FanCooler */
+    char macos[4096], contents[4096], resources[4096], script[4096];
+    safe_dirname(argv[0], macos,    sizeof(macos));       /* .../Contents/MacOS */
+    safe_dirname(macos,   contents, sizeof(contents));    /* .../Contents       */
+    snprintf(resources, sizeof(resources), "%s/Resources", contents);
+    snprintf(script,    sizeof(script),    "%s/dashboard.py", resources);
 
     if (access(script, R_OK) != 0) {
-        fprintf(stderr,
-            "FanCooler: dashboard.py not found at %s\n"
-            "Keep FanCooler/ folder next to FanCooler.app\n", script);
+        fprintf(stderr, "FanCooler: cannot find %s\n", script);
         return 1;
     }
 
-    /* Try framework Pythons first (best Dock integration on macOS),
-       then Homebrew Intel/ARM, then system. */
+    /* cd into Resources so 'import monitor' works without PYTHONPATH tricks */
+    chdir(resources);
+
+    /* Try framework Pythons first (best Dock/Tk integration on macOS),
+       then Homebrew ARM (M-series), Homebrew Intel, system. */
     const char *candidates[] = {
         "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12",
         "/Library/Frameworks/Python.framework/Versions/3.11/bin/python3.11",
@@ -62,7 +59,7 @@ int main(int argc, char *argv[]) {
     char *path_argv[] = { (char *)"python3", script, NULL };
     execvp("python3", path_argv);
 
-    fprintf(stderr, "FanCooler: Python 3 not found. "
-                    "Install from python.org or brew install python3\n");
+    fprintf(stderr, "FanCooler: Python 3 not found.\n"
+                    "Install: https://python.org  or  brew install python3\n");
     return 1;
 }
