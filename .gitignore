@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+*.pyo
+.DS_Store
+*.egg-info/
+dist/
+build/
+.env
+*.log
+/tmp/fancooler_state.json
+.claude/
