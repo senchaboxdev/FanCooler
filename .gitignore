@@ -9,3 +9,6 @@ build/
 *.log
 /tmp/fancooler_state.json
 .claude/
+
+# macOS app bundle (build artifact)
+FanCooler.app/
