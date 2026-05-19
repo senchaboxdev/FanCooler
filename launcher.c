@@ -14,13 +14,10 @@ int main(int argc, char *argv[]) {
         "/Library/Frameworks/Python.framework"
         "/Versions/3.6/bin/python3.6";
 
-    char *child_argv[] = { (char *)python, script, NULL };
-
-    /* Fork: child becomes Python, parent exits immediately.
-       Parent exit removes FanCooler.app Dock entry.
-       Child (Python) is the only remaining process → one Dock icon. */
-    if (fork() == 0) {
-        execv(python, child_argv);
-    }
-    return 0;
+    /* Pass argv[0] = this binary (inside FanCooler.app).
+       NSBundle.mainBundle() walks up argv[0] → finds FanCooler.app
+       → Dock uses FanCooler's icon from the start, no flicker.        */
+    char *new_argv[] = { argv[0], script, NULL };
+    execv(python, new_argv);
+    return 1;
 }
