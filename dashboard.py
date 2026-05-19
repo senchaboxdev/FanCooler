@@ -45,14 +45,6 @@ if not _try_acquire_lock():
     sys.exit(0)
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Hide Python's own Dock entry — FanCooler.app bundle icon is the only one
-try:
-    from AppKit import NSApplication
-    _nsapp = NSApplication.sharedApplication()
-    _nsapp.setActivationPolicy_(1)   # NSApplicationActivationPolicyAccessory
-except Exception:
-    pass
-
 try:
     from matplotlib.figure import Figure
     from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -184,11 +176,15 @@ class StatCard(tk.Frame):
 
 
 # ── Main application ──────────────────────────────────────────────────────────
-def _hide_python_dock():
-    """Keep Python's NSApp as Accessory so it never shows in the Dock."""
+def _set_dock_icon():
+    """Set the Dock icon to FanCooler's fan icon (overrides Python default)."""
     try:
-        from AppKit import NSApplication
-        NSApplication.sharedApplication().setActivationPolicy_(1)
+        from AppKit import NSApplication, NSImage
+        icns = os.path.expanduser(
+            '~/Desktop/FanCooler.app/Contents/Resources/AppIcon.icns')
+        icon = NSImage.alloc().initWithContentsOfFile_(icns)
+        if icon:
+            NSApplication.sharedApplication().setApplicationIconImage_(icon)
     except Exception:
         pass
 
@@ -196,8 +192,6 @@ def _hide_python_dock():
 class DashboardApp:
     def __init__(self):
         self.root = tk.Tk()
-        _hide_python_dock()                       # re-apply after Tk init
-        self.root.after(200, _hide_python_dock)   # and once more to be sure
         self.root.title('FanCooler')
         self.root.geometry('820x600')
         self.root.configure(bg=BG)
@@ -213,6 +207,8 @@ class DashboardApp:
         self._build_ui()
         self.monitor.start()
         self._start_menubar()
+        _set_dock_icon()
+        self.root.after(800, _set_dock_icon)   # re-apply after Tk fully settles
         self._update_loop()
 
     def _start_menubar(self):

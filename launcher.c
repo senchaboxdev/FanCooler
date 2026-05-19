@@ -6,7 +6,6 @@ int main(int argc, char *argv[]) {
     const char *home = getenv("HOME");
     if (!home) return 1;
 
-    /* dashboard.py path */
     char script[1024];
     snprintf(script, sizeof(script),
              "%s/Desktop/FanCooler/dashboard.py", home);
@@ -15,14 +14,13 @@ int main(int argc, char *argv[]) {
         "/Library/Frameworks/Python.framework"
         "/Versions/3.6/bin/python3.6";
 
-    /*
-     * Pass argv[0] = THIS binary (inside FanCooler.app).
-     * Python / NSBundle.mainBundle() walks up argv[0] to find
-     * the enclosing .app bundle → finds FanCooler.app → one Dock icon.
-     */
-    char *new_argv[] = { argv[0], script, NULL };
-    execv(python, new_argv);
+    char *child_argv[] = { (char *)python, script, NULL };
 
-    perror("fancooler: exec failed");
-    return 1;
+    /* Fork: child becomes Python, parent exits immediately.
+       Parent exit removes FanCooler.app Dock entry.
+       Child (Python) is the only remaining process → one Dock icon. */
+    if (fork() == 0) {
+        execv(python, child_argv);
+    }
+    return 0;
 }
