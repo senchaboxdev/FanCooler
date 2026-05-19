@@ -7,9 +7,10 @@ import os
 from collections import deque
 from datetime import datetime
 
-STATE_FILE = '/tmp/fancooler_state.json'
-HISTORY_SIZE = 60
-_HERE = os.path.dirname(os.path.abspath(__file__))
+STATE_FILE    = '/tmp/fancooler_state.json'
+SUDOERS_FILE  = '/etc/sudoers.d/fancooler'
+HISTORY_SIZE  = 60
+_HERE         = os.path.dirname(os.path.abspath(__file__))
 
 
 # ── Fan Controller ────────────────────────────────────────────────────────────
@@ -43,6 +44,58 @@ class FanController:
     def available(self):
         return os.path.isfile(self._smc) and os.access(self._smc, os.X_OK)
 
+    @property
+    def is_setup(self):
+        """True if the NOPASSWD sudoers rule is in place and works."""
+        if not os.path.exists(SUDOERS_FILE):
+            return False
+        try:
+            r = subprocess.Popen(
+                ['sudo', '-n', self._smc, '-f'],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            _, err = r.communicate(timeout=3)
+            # success OR error not about password = rule is active
+            return b'password' not in err.lower()
+        except Exception:
+            return False
+
+    def setup_sudoers(self, on_done=None):
+        """One-time setup: write NOPASSWD sudoers rule via osascript.
+        After this, all fan commands run silently with 'sudo -n'.
+        """
+        import tempfile
+        user = os.environ.get('USER') or os.environ.get('LOGNAME') or 'root'
+        rule = '{} ALL=(ALL) NOPASSWD: {}'.format(user, self._smc)
+
+        def _run():
+            sh = '#!/bin/sh\necho "{r}" > {f}\nchmod 440 {f}\n'.format(
+                r=rule, f=SUDOERS_FILE)
+            fd, path = tempfile.mkstemp(suffix='.sh', prefix='/tmp/fc_setup_')
+            try:
+                os.write(fd, sh.encode('ascii'))
+                os.close(fd)
+                os.chmod(path, 0o755)
+                as_cmd = ('do shell script "{}" '
+                          'with administrator privileges').format(path)
+                r = subprocess.Popen(['osascript', '-e', as_cmd],
+                                     stdout=subprocess.PIPE,
+                                     stderr=subprocess.PIPE)
+                try:
+                    out, err = r.communicate(timeout=30)
+                except Exception:
+                    r.kill()
+                    out, err = r.communicate()
+                ok = r.returncode == 0 and os.path.exists(SUDOERS_FILE)
+                if on_done:
+                    on_done(ok, (out + err).decode('utf-8', 'ignore').strip())
+            finally:
+                try:
+                    os.unlink(path)
+                except Exception:
+                    pass
+
+        threading.Thread(target=_run, daemon=True).start()
+
     # ── Internal helpers ──────────────────────────────────────────────────
 
     def _read_hw_min(self):
@@ -72,8 +125,27 @@ class FanController:
         return struct.pack('<f', float(rpm)).hex()
 
     def _run_admin(self, sh_lines):
-        """Write temp shell script and execute via osascript admin dialog."""
+        """Run smc commands with root. Uses 'sudo -n' (silent) when the
+        sudoers rule is in place; otherwise shows macOS password dialog once.
+        """
         import tempfile
+
+        if self.is_setup:
+            # Silent path — no dialog
+            combined_out = ''
+            ok = True
+            for line in sh_lines:
+                cmd = ['sudo', '-n'] + line.split()
+                r = subprocess.Popen(cmd,
+                                     stdout=subprocess.PIPE,
+                                     stderr=subprocess.PIPE)
+                out, err = r.communicate(timeout=5)
+                combined_out += (out + err).decode('utf-8', 'ignore')
+                if r.returncode != 0:
+                    ok = False
+            return ok, combined_out.strip()
+
+        # First-time path — osascript dialog
         script_content = '#!/bin/sh\n' + '\n'.join(sh_lines) + '\n'
         fd, sh_path = tempfile.mkstemp(suffix='.sh', prefix='/tmp/fc_')
         try:

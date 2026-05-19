@@ -322,6 +322,42 @@ class DashboardApp:
                                       font=('SF Pro Display', 10))
         self.fc_status_lbl.pack(anchor='w')
 
+        # ── One-time sudo setup row ────────────────────────────────
+        tk.Frame(status_card, bg=BORDER, height=1).pack(fill='x', pady=(10, 6))
+        setup_row = tk.Frame(status_card, bg=CARD)
+        setup_row.pack(fill='x')
+        tk.Label(setup_row, text='Sudo access:', bg=CARD, fg=DIM,
+                 font=('SF Pro Display', 11)).pack(side='left')
+
+        if fc.is_setup:
+            self.fc_sudo_lbl = tk.Label(setup_row,
+                                        text='No password needed',
+                                        bg=CARD, fg=GREEN,
+                                        font=('SF Pro Display', 11, 'bold'))
+            self.fc_sudo_lbl.pack(side='left', padx=8)
+            self.fc_setup_btn = None
+        else:
+            self.fc_sudo_lbl = tk.Label(setup_row,
+                                        text='Password required each time',
+                                        bg=CARD, fg=YELLOW,
+                                        font=('SF Pro Display', 11))
+            self.fc_sudo_lbl.pack(side='left', padx=8)
+            self.fc_setup_btn = tk.Button(
+                setup_row,
+                text='One-time Setup',
+                bg='#1a3a5c', fg=ACCENT, relief='flat',
+                padx=12, pady=4,
+                font=('SF Pro Display', 10, 'bold'),
+                highlightbackground=ACCENT, highlightthickness=1,
+                activebackground=ACCENT, activeforeground=BG,
+                cursor='hand2',
+                command=self._fc_do_setup)
+            self.fc_setup_btn.pack(side='left')
+            tk.Label(setup_row,
+                     text='  (asks once, then never again)',
+                     bg=CARD, fg=DIM,
+                     font=('SF Pro Display', 9)).pack(side='left')
+
         # ── Auto-boost section ─────────────────────────────────────
         tk.Label(inner, text='Auto-Boost', bg=BG, fg=TEXT,
                  font=('SF Pro Display', 13, 'bold')).pack(**pad)
@@ -528,7 +564,10 @@ class DashboardApp:
             self._fc_show_status('smc_tool not found in app folder', RED)
             return
 
-        self._fc_show_status('Waiting for password...', YELLOW)
+        if self.monitor.fan_ctrl.is_setup:
+            self._fc_show_status('Applying...', ACCENT)
+        else:
+            self._fc_show_status('Waiting for password...', YELLOW)
         self._fc_set_buttons_state('disabled')
 
         def _worker():
@@ -592,6 +631,32 @@ class DashboardApp:
             self.fc_status_lbl.configure(text=msg, fg=color)
         except Exception:
             pass
+
+    def _fc_do_setup(self):
+        """Run the one-time sudoers setup (shows macOS password dialog once)."""
+        fc = self.monitor.fan_ctrl
+        if self.fc_setup_btn:
+            self.fc_setup_btn.configure(state='disabled', text='Setting up...')
+        self.fc_sudo_lbl.configure(text='Asking for password...', fg=YELLOW)
+
+        def _on_done(ok, msg):
+            def _update():
+                if ok:
+                    self.fc_sudo_lbl.configure(
+                        text='No password needed', fg=GREEN)
+                    if self.fc_setup_btn:
+                        self.fc_setup_btn.pack_forget()
+                        self.fc_setup_btn = None
+                    self._fc_show_status('Setup complete — no more password dialogs!', GREEN)
+                else:
+                    self.fc_sudo_lbl.configure(
+                        text='Setup failed or cancelled', fg=RED)
+                    if self.fc_setup_btn:
+                        self.fc_setup_btn.configure(state='normal', text='Retry Setup')
+                    self._fc_show_status('Setup failed: ' + (msg[:50] if msg else ''), RED)
+            self.root.after(0, _update)
+
+        fc.setup_sudoers(on_done=_on_done)
 
     def _fc_update_loop(self):
         """Update fan control status label from monitor loop."""
