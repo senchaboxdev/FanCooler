@@ -1,73 +1,69 @@
 #!/bin/bash
-# build_app.sh — creates FanCooler.app on the Desktop
-# Run once after cloning: bash build_app.sh
+# build_app.sh — build FanCooler.app next to this script (or on Desktop)
+# Called by setup.sh or run directly: bash build_app.sh
 
 set -e
-
 PROJECT="$(cd "$(dirname "$0")" && pwd)"
-APP="$HOME/Desktop/FanCooler.app"
-PYTHON="/usr/local/bin/python3.6"
-
+APP="$(dirname "$PROJECT")/FanCooler.app"   # sibling of FanCooler/ folder
 echo "Building $APP ..."
 
-# ── Create bundle structure ──────────────────────────────────────────────────
+# ── Find Python (for icon generation) ────────────────────────────────────────
+PYTHON=""
+for c in python3 python3.12 python3.11 python3.10 python3.9 python3.8 python3.6; do
+    if command -v "$c" &>/dev/null; then PYTHON=$(command -v "$c"); break; fi
+done
+[ -z "$PYTHON" ] && { echo "ERROR: Python 3 not found"; exit 1; }
+
+# ── Bundle structure ──────────────────────────────────────────────────────────
 mkdir -p "$APP/Contents/MacOS"
 mkdir -p "$APP/Contents/Resources"
 
-# ── Launcher script ──────────────────────────────────────────────────────────
-cat > "$APP/Contents/MacOS/FanCooler" << LAUNCHER
-#!/bin/bash
-PROJECT="\$HOME/Desktop/FanCooler"
-PYTHON="$PYTHON"
-cd "\$PROJECT"
-exec "\$PYTHON" "\$PROJECT/main.py"
-LAUNCHER
+# ── Compile native launcher binary ────────────────────────────────────────────
+echo "  Compiling launcher..."
+cc -o "$APP/Contents/MacOS/FanCooler" "$PROJECT/launcher.c"
 chmod +x "$APP/Contents/MacOS/FanCooler"
 
-# ── Info.plist ───────────────────────────────────────────────────────────────
+# ── Info.plist ────────────────────────────────────────────────────────────────
 cat > "$APP/Contents/Info.plist" << 'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key>          <string>FanCooler</string>
-    <key>CFBundleDisplayName</key>   <string>FanCooler</string>
-    <key>CFBundleIdentifier</key>    <string>com.senchabox.fancooler</string>
-    <key>CFBundleVersion</key>       <string>1.0</string>
-    <key>CFBundleShortVersionString</key> <string>1.0</string>
-    <key>CFBundleExecutable</key>    <string>FanCooler</string>
-    <key>CFBundlePackageType</key>   <string>APPL</string>
-    <key>CFBundleSignature</key>     <string>????</string>
-    <key>CFBundleIconFile</key>      <string>AppIcon</string>
-    <key>NSHighResolutionCapable</key> <true/>
-    <key>NSPrincipalClass</key>      <string>NSApplication</string>
+    <key>CFBundleName</key>             <string>FanCooler</string>
+    <key>CFBundleDisplayName</key>      <string>FanCooler</string>
+    <key>CFBundleIdentifier</key>       <string>com.senchabox.fancooler</string>
+    <key>CFBundleVersion</key>          <string>1.0</string>
+    <key>CFBundleShortVersionString</key><string>1.0</string>
+    <key>CFBundleExecutable</key>       <string>FanCooler</string>
+    <key>CFBundlePackageType</key>      <string>APPL</string>
+    <key>CFBundleSignature</key>        <string>????</string>
+    <key>CFBundleIconFile</key>         <string>AppIcon</string>
+    <key>NSHighResolutionCapable</key>  <true/>
     <key>NSAppleEventsUsageDescription</key>
-    <string>FanCooler uses AppleScript to control fan speed.</string>
+        <string>FanCooler uses AppleScript to control fan speed.</string>
 </dict>
 </plist>
 PLIST
 
-# ── Icon ─────────────────────────────────────────────────────────────────────
-ICONSET="/tmp/FanCooler.iconset"
+# ── Icon ──────────────────────────────────────────────────────────────────────
+echo "  Building icon..."
+ICONSET="/tmp/FanCooler_$$.iconset"
 mkdir -p "$ICONSET"
-
 "$PYTHON" "$PROJECT/make_icon.py"
-
 for pair in "16:icon_16x16" "32:icon_16x16@2x" "32:icon_32x32" \
             "64:icon_32x32@2x" "128:icon_128x128" "256:icon_128x128@2x" \
             "256:icon_256x256" "512:icon_256x256@2x" "512:icon_512x512" \
             "1024:icon_512x512@2x"; do
-    sz="${pair%%:*}"
-    name="${pair##*:}"
+    sz="${pair%%:*}"; name="${pair##*:}"
     cp "/tmp/icon_${sz}.png" "$ICONSET/${name}.png"
 done
-
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
 rm -rf "$ICONSET"
 
-# ── Remove quarantine so Gatekeeper won't block it ───────────────────────────
+# ── Remove quarantine ─────────────────────────────────────────────────────────
 xattr -cr "$APP"
 
-echo "Done! FanCooler.app is on your Desktop."
-echo "You can drag it to the Dock too."
+echo ""
+echo "Done!  $APP"
+echo "Double-click it to launch, or drag to Dock."

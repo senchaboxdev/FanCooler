@@ -1,30 +1,32 @@
 #!/bin/bash
-set -e
-echo "🌀 FanCooler Setup"
-echo "=================="
+# setup.sh — run once on a new Mac
+# Usage: cd ~/Desktop/FanCooler && bash setup.sh
 
-# Check Python 3
-if ! command -v python3 &>/dev/null; then
-  echo "❌ Python 3 not found. Install from https://python.org"
-  exit 1
+set -e
+PROJECT="$(cd "$(dirname "$0")" && pwd)"
+echo "=== FanCooler setup === ($PROJECT)"
+
+# ── 1. Find Python 3 ──────────────────────────────────────────────────────────
+PYTHON=""
+for c in python3 python3.12 python3.11 python3.10 python3.9 python3.8; do
+    if command -v "$c" &>/dev/null; then PYTHON=$(command -v "$c"); break; fi
+done
+[ -z "$PYTHON" ] && { echo "ERROR: Python 3 not found. Install from python.org or brew install python3"; exit 1; }
+echo "Python: $PYTHON ($($PYTHON --version 2>&1))"
+
+# ── 2. Install packages ────────────────────────────────────────────────────────
+echo "Installing packages..."
+"$PYTHON" -m pip install --user psutil matplotlib rumps pyobjc-framework-Cocoa \
+    || echo "(pip warnings — usually ok)"
+
+# ── 3. Compile smc_tool ────────────────────────────────────────────────────────
+if [ ! -x "$PROJECT/smc_tool" ] && [ -f "$PROJECT/smc.c" ]; then
+    echo "Compiling smc_tool..."
+    gcc -o "$PROJECT/smc_tool" "$PROJECT/smc.c" \
+        -framework IOKit -framework CoreFoundation -DCMD_TOOL_BUILD \
+        && chmod +x "$PROJECT/smc_tool" && echo "  ok" \
+        || echo "  WARNING: compile failed — fan control unavailable"
 fi
 
-echo "✓ Python $(python3 --version)"
-
-# Install dependencies
-echo ""
-echo "Installing dependencies..."
-python3 -m pip install --upgrade pip -q
-python3 -m pip install psutil matplotlib rumps Pillow
-
-echo ""
-echo "✅ Setup complete!"
-echo ""
-echo "Run the app:"
-echo "  python3 main.py          ← dashboard + menu bar"
-echo "  python3 dashboard.py     ← dashboard only"
-echo "  python3 menubar.py       ← menu bar only"
-echo ""
-echo "Optional: for real temperature readings, install one of:"
-echo "  brew install osx-cpu-temp"
-echo "  sudo gem install iStats"
+# ── 4. Build .app ─────────────────────────────────────────────────────────────
+bash "$PROJECT/build_app.sh"
