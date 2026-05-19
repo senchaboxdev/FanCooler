@@ -753,7 +753,7 @@ class DashboardApp:
             self._fc_update_loop()
 
         # Update graphs only when that tab is visible
-        if self.nb.index('current') == 3 and HAS_MPL:
+        if self.nb.index('current') == 1 and HAS_MPL:
             self._update_graphs(hist)
 
         self.root.after(2000, self._update_loop)
