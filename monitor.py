@@ -39,6 +39,7 @@ class FanController:
         self._lock        = threading.Lock()
         self.status_msg   = ''
         self._hw_min      = self._read_hw_min()   # hardware-default min bytes
+        self._is_setup_cache = None               # None = unchecked
 
     @property
     def available(self):
@@ -46,17 +47,24 @@ class FanController:
 
     @property
     def is_setup(self):
-        """True if the NOPASSWD sudoers rule is in place and works."""
+        """True if the NOPASSWD sudoers rule is in place and works.
+        Result is cached after first successful check to avoid subprocess overhead.
+        """
+        if self._is_setup_cache is True:
+            return True
         if not os.path.exists(SUDOERS_FILE):
+            self._is_setup_cache = False
             return False
         try:
             r = subprocess.Popen(
                 ['sudo', '-n', self._smc, '-f'],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             _, err = r.communicate(timeout=3)
-            # success OR error not about password = rule is active
-            return b'password' not in err.lower()
+            result = b'password' not in err.lower()
+            self._is_setup_cache = result
+            return result
         except Exception:
+            self._is_setup_cache = False
             return False
 
     def setup_sudoers(self, on_done=None):
@@ -86,6 +94,8 @@ class FanController:
                     r.kill()
                     out, err = r.communicate()
                 ok = r.returncode == 0 and os.path.exists(SUDOERS_FILE)
+                if ok:
+                    self._is_setup_cache = None   # force re-check
                 if on_done:
                     on_done(ok, (out + err).decode('utf-8', 'ignore').strip())
             finally:

@@ -5,6 +5,8 @@ import psutil
 import subprocess
 import platform
 import math
+import sys
+import os
 
 try:
     from matplotlib.figure import Figure
@@ -154,7 +156,25 @@ class DashboardApp:
 
         self._build_ui()
         self.monitor.start()
+        self._start_menubar()
         self._update_loop()
+
+    def _start_menubar(self):
+        """Launch menubar.py as a background process (no Dock icon)."""
+        import threading as _th
+        def _launch():
+            import time; time.sleep(1)   # let main window open first
+            try:
+                import rumps  # noqa — check it's installed
+                _here = os.path.dirname(os.path.abspath(__file__))
+                self._menubar_proc = subprocess.Popen(
+                    [sys.executable, os.path.join(_here, 'menubar.py')],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            except ImportError:
+                pass
+            except Exception:
+                pass
+        _th.Thread(target=_launch, daemon=True).start()
 
     # ── UI construction ───────────────────────────────────────────────────────
 
@@ -262,11 +282,33 @@ class DashboardApp:
         self.ax_temp = self.fig.add_subplot(3, 1, 2)
         self.ax_fan  = self.fig.add_subplot(3, 1, 3)
 
-        for ax in (self.ax_cpu, self.ax_temp, self.ax_fan):
+        graph_specs = [
+            (self.ax_cpu,  'CPU %',   (0, 100), ACCENT),
+            (self.ax_temp, 'Temp °C', None,     ORANGE),
+            (self.ax_fan,  'Fan RPM', (0, 6200), BLUE),
+        ]
+        self._graph_lines = []
+        self._graph_fills = []
+        self._graph_axes  = []
+        for ax, label, ylim, color in graph_specs:
             ax.set_facecolor(CARD)
             ax.grid(True, alpha=0.3, color=BORDER)
             for sp in ax.spines.values():
                 sp.set_color(BORDER)
+            ax.tick_params(colors=DIM, labelsize=8)
+            ax.set_ylabel(label, fontsize=9, color=DIM)
+            if ylim:
+                ax.set_ylim(*ylim)
+            line, = ax.plot([], [], color=color, linewidth=2,
+                            solid_capstyle='round', animated=False)
+            fill = ax.fill_between([], [], alpha=0.12, color=color)
+            self._graph_lines.append(line)
+            self._graph_fills.append((ax, color))
+            self._graph_axes.append((ax, ylim))
+
+        # Alert line on temp graph (static)
+        self._alert_line = self.ax_temp.axhline(
+            y=80, color=RED, linestyle='--', alpha=0.5, linewidth=1.2)
 
         self.mpl_canvas = FigureCanvasTkAgg(self.fig, master=tab)
         self.mpl_canvas.draw()
@@ -761,31 +803,30 @@ class DashboardApp:
     def _update_graphs(self, hist):
         if not hist['cpu']:
             return
-        x = range(len(hist['cpu']))
 
-        for ax, key, color, label, ylim in [
-            (self.ax_cpu,  'cpu',  ACCENT,  'CPU %',   (0, 100)),
-            (self.ax_temp, 'temp', ORANGE,  'Temp °C', None),
-            (self.ax_fan,  'fan',  BLUE,    'Fan RPM', (0, 6200)),
-        ]:
-            ax.clear()
-            ax.set_facecolor(CARD)
-            ax.grid(True, alpha=0.3, color=BORDER)
-            for sp in ax.spines.values():
-                sp.set_color(BORDER)
-            ax.tick_params(colors=DIM, labelsize=8)
-            ax.set_ylabel(label, fontsize=9, color=DIM)
+        keys = ['cpu', 'temp', 'fan']
+        for i, (line, (ax, fill_color), (_, ylim), key) in enumerate(
+                zip(self._graph_lines, self._graph_fills,
+                    self._graph_axes, keys)):
+            data = hist[key]
+            if not data:
+                continue
+            x = list(range(len(data)))
+            line.set_data(x, data)
+            ax.set_xlim(0, max(len(data) - 1, 1))
+            if ylim is None:
+                mn, mx = min(data), max(data)
+                pad = max((mx - mn) * 0.1, 2)
+                ax.set_ylim(mn - pad, mx + pad)
 
-            if hist[key]:
-                ax.plot(x, hist[key], color=color, linewidth=2, solid_capstyle='round')
-                ax.fill_between(x, hist[key], alpha=0.12, color=color)
-            if ylim:
-                ax.set_ylim(*ylim)
+            # Redraw fill (cheap: remove old, add new)
+            for coll in ax.collections:
+                coll.remove()
+            ax.fill_between(x, data, alpha=0.12, color=fill_color)
 
-        # Alert line on temp graph
-        self.ax_temp.axhline(y=self.monitor.temp_alert,
-                             color=RED, linestyle='--', alpha=0.5, linewidth=1.2)
-
+        # Keep alert line in sync
+        self._alert_line.set_ydata([self.monitor.temp_alert,
+                                     self.monitor.temp_alert])
         self.mpl_canvas.draw_idle()
 
     # ── Run ───────────────────────────────────────────────────────────────────
@@ -796,6 +837,10 @@ class DashboardApp:
 
     def _on_close(self):
         self.monitor.stop()
+        try:
+            self._menubar_proc.terminate()
+        except Exception:
+            pass
         self.root.destroy()
 
 
