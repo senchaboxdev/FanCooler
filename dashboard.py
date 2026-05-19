@@ -139,8 +139,25 @@ class StatCard(tk.Frame):
 
 
 # ── Main application ──────────────────────────────────────────────────────────
+def _setup_dock_icon():
+    """Show exactly one Dock icon with the FanCooler icon (not Python's default)."""
+    try:
+        from AppKit import NSApplication, NSImage
+        app = NSApplication.sharedApplication()
+        # NSApplicationActivationPolicyRegular = 0  (normal app, shows in Dock)
+        app.setActivationPolicy_(0)
+        icns = os.path.expanduser(
+            '~/Desktop/FanCooler.app/Contents/Resources/AppIcon.icns')
+        icon = NSImage.alloc().initByReferencingFile_(icns)
+        if icon:
+            app.setApplicationIconImage_(icon)
+    except Exception:
+        pass
+
+
 class DashboardApp:
     def __init__(self):
+        _setup_dock_icon()
         self.root = tk.Tk()
         self.root.title('FanCooler')
         self.root.geometry('820x600')
