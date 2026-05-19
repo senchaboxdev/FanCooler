@@ -6,6 +6,13 @@ import sys
 import os
 import json
 
+# Must be set BEFORE rumps/NSApplication initialises — prevents Dock entry
+try:
+    from AppKit import NSApplication
+    NSApplication.sharedApplication().setActivationPolicy_(1)  # Accessory
+except Exception:
+    pass
+
 try:
     import rumps
 except ImportError:
