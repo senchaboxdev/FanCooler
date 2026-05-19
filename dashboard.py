@@ -418,27 +418,17 @@ class DashboardApp:
                   highlightbackground=BORDER, highlightthickness=1,
                   command=self._fc_reset).pack(side='left')
 
-        # ── Install section (shown only when tool missing) ─────────
+        # ── Status note when tool missing ──────────────────────────
         tk.Frame(inner, bg=BORDER, height=1, width=500).pack(anchor='w', padx=36, pady=14)
-        install_frame = tk.Frame(inner, bg=BG)
-        install_frame.pack(anchor='w', padx=36, pady=4)
-
         if not fc.available:
-            tk.Label(install_frame,
-                     text='smcFanControl is required for fan speed control on Intel Macs.',
-                     bg=BG, fg=DIM, font=('SF Pro Display', 11)).pack(anchor='w')
-            tk.Label(install_frame,
-                     text='Install it automatically with Homebrew:',
-                     bg=BG, fg=DIM, font=('SF Pro Display', 11)).pack(anchor='w', pady=(4, 8))
-            tk.Button(install_frame,
-                      text='Install smcFanControl  (brew --cask)',
-                      bg=GREEN, fg=BG, relief='flat', padx=18, pady=8,
-                      font=('SF Pro Display', 11, 'bold'),
-                      activebackground='#3fb950',
-                      command=self._fc_install).pack(anchor='w')
-            self.fc_install_lbl = tk.Label(install_frame, text='', bg=BG, fg=DIM,
-                                           font=('SF Pro Display', 10))
-            self.fc_install_lbl.pack(anchor='w', pady=6)
+            note = tk.Frame(inner, bg=BG)
+            note.pack(anchor='w', padx=36, pady=4)
+            tk.Label(note,
+                     text='smc_tool not found in app directory.',
+                     bg=BG, fg=RED, font=('SF Pro Display', 11, 'bold')).pack(anchor='w')
+            tk.Label(note,
+                     text='Re-clone the repo or copy smc_tool next to dashboard.py.',
+                     bg=BG, fg=DIM, font=('SF Pro Display', 10)).pack(anchor='w', pady=2)
 
         tk.Frame(inner, bg=BG, height=24).pack()   # bottom padding
 
@@ -557,38 +547,6 @@ class DashboardApp:
             self.fc_status_lbl.configure(text=msg, fg=color)
         except Exception:
             pass
-
-    def _fc_install(self):
-        """Install smcFanControl via Homebrew in background."""
-        try:
-            self.fc_install_lbl.configure(
-                text='Installing... this may take a minute.', fg=YELLOW)
-        except Exception:
-            pass
-
-        def on_done(ok, msg):
-            def _update():
-                fc = self.monitor.fan_ctrl
-                if ok and fc.available:
-                    try:
-                        self.fc_tool_lbl.configure(
-                            text='smcFanControl ready', fg=GREEN)
-                        self.fc_install_lbl.configure(
-                            text='Installed! Restart the app to enable all controls.',
-                            fg=GREEN)
-                        self._fc_set_controls_state('normal')
-                    except Exception:
-                        pass
-                else:
-                    err = msg[-80:] if msg else 'Unknown error'
-                    try:
-                        self.fc_install_lbl.configure(
-                            text='Install failed: ' + err, fg=RED)
-                    except Exception:
-                        pass
-            self.root.after(0, _update)
-
-        self.monitor.fan_ctrl.install_brew(on_done=on_done)
 
     def _fc_update_loop(self):
         """Update fan control status label from monitor loop."""
