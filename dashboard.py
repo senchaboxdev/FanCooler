@@ -7,6 +7,43 @@ import platform
 import math
 import sys
 import os
+import fcntl
+
+# ── Single-instance lock ──────────────────────────────────────────────────────
+_LOCK_PATH = '/tmp/fancooler.lock'
+_lock_fh   = None
+
+def _try_acquire_lock():
+    """Return True if we are the first instance, False if already running."""
+    global _lock_fh
+    try:
+        _lock_fh = open(_LOCK_PATH, 'w')
+        fcntl.flock(_lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _lock_fh.write(str(os.getpid()))
+        _lock_fh.flush()
+        return True
+    except IOError:
+        return False
+
+def _bring_to_front():
+    """Raise the existing window via AppleScript."""
+    for script in [
+        'tell application "FanCooler" to activate',
+        'tell application "System Events" to set frontmost of '
+        '(first process whose bundle identifier is "com.senchabox.fancooler") to true',
+    ]:
+        try:
+            subprocess.run(['osascript', '-e', script],
+                           timeout=2,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            return
+        except Exception:
+            pass
+
+if not _try_acquire_lock():
+    _bring_to_front()
+    sys.exit(0)
+# ─────────────────────────────────────────────────────────────────────────────
 
 try:
     from matplotlib.figure import Figure
