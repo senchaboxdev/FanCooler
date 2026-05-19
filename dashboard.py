@@ -139,28 +139,9 @@ class StatCard(tk.Frame):
 
 
 # ── Main application ──────────────────────────────────────────────────────────
-def _apply_dock_icon():
-    """Set FanCooler icon on the running NSApplication (call after Tk inits)."""
-    try:
-        from AppKit import NSApplication, NSImage
-        app = NSApplication.sharedApplication()
-        app.setActivationPolicy_(0)   # NSApplicationActivationPolicyRegular
-        icns = os.path.expanduser(
-            '~/Desktop/FanCooler.app/Contents/Resources/AppIcon.icns')
-        icon = NSImage.alloc().initByReferencingFile_(icns)
-        if icon:
-            app.setApplicationIconImage_(icon)
-    except Exception:
-        pass
-
-
 class DashboardApp:
     def __init__(self):
         self.root = tk.Tk()
-        # Apply icon AFTER Tk() so we override whatever Tk set
-        _apply_dock_icon()
-        # Re-apply after 300 ms in case Tk resets it during full init
-        self.root.after(300, _apply_dock_icon)
         self.root.title('FanCooler')
         self.root.geometry('820x600')
         self.root.configure(bg=BG)
