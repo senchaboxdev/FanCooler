@@ -375,18 +375,29 @@ class DashboardApp:
                  bg=BG, fg=DIM, font=('SF Pro Display', 10)).pack(**pad)
         tk.Frame(inner, bg=BG, height=10).pack()
 
-        # Preset buttons
+        # Preset buttons — bright colors so they're clearly clickable
         preset_row = tk.Frame(inner, bg=BG)
         preset_row.pack(anchor='w', padx=36, pady=4)
         self._preset_btns = {}
+        preset_colors = {
+            'Auto':        ('#30363d', TEXT),
+            'Eco':         ('#1f4e2a', GREEN),
+            'Normal':      ('#1a3a5c', ACCENT),
+            'Performance': ('#4a3000', YELLOW),
+            'Max':         ('#4a1500', RED),
+        }
         for name, rpm in [('Auto', 0), ('Eco', 1200),
                           ('Normal', 2500), ('Performance', 4000), ('Max', 6200)]:
+            bg_c, fg_c = preset_colors.get(name, (CARD, TEXT))
+            sub = 'auto' if rpm == 0 else '{} RPM'.format(rpm)
             btn = tk.Button(
-                preset_row, text='{}\n{}'.format(name, 'auto' if rpm == 0 else '{} RPM'.format(rpm)),
-                bg=CARD, fg=TEXT, relief='flat', padx=12, pady=8,
-                font=('SF Pro Display', 10),
-                highlightbackground=BORDER, highlightthickness=1,
-                activebackground=ACCENT, activeforeground=BG,
+                preset_row,
+                text='{}\n{}'.format(name, sub),
+                bg=bg_c, fg=fg_c, relief='flat', padx=14, pady=10,
+                font=('SF Pro Display', 10, 'bold'),
+                highlightbackground=fg_c, highlightthickness=1,
+                activebackground=fg_c, activeforeground=BG,
+                cursor='hand2',
                 command=lambda n=name: self._fc_preset(n))
             btn.pack(side='left', padx=(0, 8))
             self._preset_btns[name] = btn
@@ -409,14 +420,18 @@ class DashboardApp:
         # Apply / Reset buttons
         btn_row = tk.Frame(inner, bg=BG)
         btn_row.pack(anchor='w', padx=36, pady=8)
-        tk.Button(btn_row, text='Apply', bg=ACCENT, fg=BG, relief='flat',
-                  padx=20, pady=7, font=('SF Pro Display', 11, 'bold'),
-                  activebackground='#79c0ff', activeforeground=BG,
-                  command=self._fc_apply_manual).pack(side='left', padx=(0, 10))
-        tk.Button(btn_row, text='Reset to Auto', bg=CARD, fg=TEXT, relief='flat',
-                  padx=20, pady=7, font=('SF Pro Display', 11),
-                  highlightbackground=BORDER, highlightthickness=1,
-                  command=self._fc_reset).pack(side='left')
+        self.fc_apply_btn = tk.Button(
+            btn_row, text='Apply', bg=ACCENT, fg=BG, relief='flat',
+            padx=20, pady=7, font=('SF Pro Display', 11, 'bold'),
+            activebackground='#79c0ff', activeforeground=BG, cursor='hand2',
+            command=self._fc_apply_manual)
+        self.fc_apply_btn.pack(side='left', padx=(0, 10))
+        self.fc_reset_btn = tk.Button(
+            btn_row, text='Reset to Auto', bg='#1a3a2a', fg=GREEN, relief='flat',
+            padx=20, pady=7, font=('SF Pro Display', 11, 'bold'),
+            highlightbackground=GREEN, highlightthickness=1, cursor='hand2',
+            command=self._fc_reset)
+        self.fc_reset_btn.pack(side='left')
 
         # ── Status note when tool missing ──────────────────────────
         tk.Frame(inner, bg=BORDER, height=1, width=500).pack(anchor='w', padx=36, pady=14)
@@ -503,44 +518,74 @@ class DashboardApp:
         self.fc_man_rpm_lbl.configure(
             text='{} RPM'.format(self.fc_man_rpm_var.get()))
 
+    def _fc_run_async(self, fn, on_success_msg, on_success_mode=None):
+        """Run a fan control function in a background thread.
+        Shows 'Waiting for password...' while macOS dialog is open,
+        then updates status label when done — keeps UI responsive.
+        """
+        import threading as _th
+        if not self.monitor.fan_ctrl.available:
+            self._fc_show_status('smc_tool not found in app folder', RED)
+            return
+
+        self._fc_show_status('Waiting for password...', YELLOW)
+        self._fc_set_buttons_state('disabled')
+
+        def _worker():
+            ok, msg = fn()
+            def _done():
+                self._fc_set_buttons_state('normal')
+                if ok:
+                    self._fc_show_status(on_success_msg, GREEN)
+                    if on_success_mode:
+                        try:
+                            self.fc_mode_lbl.configure(text=on_success_mode)
+                        except Exception:
+                            pass
+                else:
+                    err = msg.strip() if msg else 'Auth cancelled'
+                    self._fc_show_status(err[:60] or 'Cancelled', RED)
+            self.root.after(0, _done)
+
+        _th.Thread(target=_worker, daemon=True).start()
+
+    def _fc_set_buttons_state(self, state):
+        for btn in self._preset_btns.values():
+            try:
+                btn.configure(state=state)
+            except Exception:
+                pass
+        for btn in [self.fc_apply_btn, self.fc_reset_btn]:
+            try:
+                btn.configure(state=state)
+            except Exception:
+                pass
+
     def _fc_preset(self, name):
         fc = self.monitor.fan_ctrl
-        if not fc.available:
-            self._fc_show_status('Not available — install smcFanControl first', RED)
-            return
-        ok, msg = fc.apply_preset(name)
-        if ok:
-            self._fc_show_status('Preset: {}'.format(name), GREEN)
-            self.fc_mode_lbl.configure(
-                text='Mode: Auto' if name == 'Auto' else 'Mode: Manual ({})'.format(name))
-        else:
-            self._fc_show_status('Error: ' + msg[:50], RED)
+        mode = 'Mode: Auto' if name == 'Auto' else 'Mode: {} preset'.format(name)
+        self._fc_run_async(
+            lambda: fc.apply_preset(name),
+            on_success_msg='Preset applied: {}'.format(name),
+            on_success_mode=mode,
+        )
 
     def _fc_apply_manual(self):
-        fc = self.monitor.fan_ctrl
-        if not fc.available:
-            self._fc_show_status('Not available — install smcFanControl first', RED)
-            return
         rpm = self.fc_man_rpm_var.get()
-        ok, msg = fc.set_min_rpm(rpm)
-        if ok:
-            self._fc_show_status('Set to {} RPM'.format(rpm), GREEN)
-            self.fc_mode_lbl.configure(
-                text='Mode: Manual ({} RPM min)'.format(rpm))
-        else:
-            self._fc_show_status('Error: ' + msg[:50], RED)
+        fc = self.monitor.fan_ctrl
+        self._fc_run_async(
+            lambda: fc.set_min_rpm(rpm),
+            on_success_msg='Min fan set to {} RPM'.format(rpm),
+            on_success_mode='Mode: Manual ({} RPM min)'.format(rpm),
+        )
 
     def _fc_reset(self):
         fc = self.monitor.fan_ctrl
-        if not fc.available:
-            self._fc_show_status('Not available — install smcFanControl first', RED)
-            return
-        ok, _ = fc.reset_auto()
-        if ok:
-            self._fc_show_status('Reset to Auto', GREEN)
-            self.fc_mode_lbl.configure(text='Mode: Auto')
-        else:
-            self._fc_show_status('Reset failed', RED)
+        self._fc_run_async(
+            lambda: fc.reset_auto(),
+            on_success_msg='Fan reset to Auto (macOS controls)',
+            on_success_mode='Mode: Auto',
+        )
 
     def _fc_show_status(self, msg, color=ACCENT):
         try:
