@@ -53,20 +53,20 @@ try:
 except ImportError:
     HAS_MPL = False
 
-from monitor import SystemMonitor
+from monitor import SystemMonitor, load_config, save_config
 
 # ── Color palette ─────────────────────────────────────────────────────────────
-BG       = '#0d1117'
-CARD     = '#161b22'
-BORDER   = '#30363d'
-TEXT     = '#e6edf3'
-DIM      = '#8b949e'
-ACCENT   = '#58a6ff'
-GREEN    = '#3fb950'
-YELLOW   = '#d29922'
-ORANGE   = '#db6d28'
-RED      = '#f85149'
-BLUE     = '#79c0ff'
+BG       = '#070a0e'
+CARD     = '#10151d'
+BORDER   = '#202938'
+TEXT     = '#edf2f8'
+DIM      = '#7e8b9d'
+ACCENT   = '#4fd6e3'
+GREEN    = '#43d97e'
+YELLOW   = '#e3b341'
+ORANGE   = '#ff9447'
+RED      = '#ff5c5c'
+BLUE     = '#6ab8ff'
 
 def temp_color(t):
     if t < 55:  return GREEN
@@ -80,88 +80,151 @@ def fan_color(pct):
     return RED
 
 
+def _shade(hex_color, factor):
+    """Darken a #rrggbb color by factor (0..1) — used for glow halos."""
+    r = int(hex_color[1:3], 16)
+    g = int(hex_color[3:5], 16)
+    b = int(hex_color[5:7], 16)
+    return '#{:02x}{:02x}{:02x}'.format(
+        int(r * factor), int(g * factor), int(b * factor))
+
+
 # ── Gauge widget ──────────────────────────────────────────────────────────────
 class CircleGauge(tk.Canvas):
+    """Instrument-style gauge: tick bezel, glowing value arc, eased needle."""
     START  = 210   # degrees CCW from 3-o'clock = ~8 o'clock
     SWEEP  = -240  # clockwise 240°
+    TICKS  = 25
+    MAJOR  = 6     # every Nth tick is a major tick
 
-    def __init__(self, parent, size=128, label='', unit='',
+    def __init__(self, parent, size=140, label='', unit='',
                  min_val=0, max_val=100, **kw):
-        super().__init__(parent, width=size, height=size + 26,
+        super().__init__(parent, width=size, height=size + 30,
                          bg=CARD, highlightthickness=0, **kw)
         self.size = size
-        self.label = label
-        self.unit = unit
         self.min_val = min_val
         self.max_val = max_val
-        self._value = 0
+        self._value = 0.0
+        self._target = 0.0
         self._color = GREEN
-        self._draw()
+        self._anim_running = False
 
-    def set_value(self, value, color=None):
-        self._value = value
-        if color:
-            self._color = color
-        self._draw()
-
-    def _draw(self):
-        self.delete('all')
-        s = self.size
-        pad = 14
+        # All items created once; set_value() mutates them in place.
+        s = size
+        pad = self._pad = 20
         cx, cy = s // 2, s // 2
 
-        # Background arc
+        # Tick bezel
+        for i in range(self.TICKS):
+            frac = i / float(self.TICKS - 1)
+            a = math.radians(self.START + self.SWEEP * frac)
+            major = (i % self.MAJOR == 0)
+            r_out = s / 2 - 3
+            r_in  = r_out - (7 if major else 4)
+            self.create_line(cx + r_in * math.cos(a), cy - r_in * math.sin(a),
+                             cx + r_out * math.cos(a), cy - r_out * math.sin(a),
+                             fill='#2c3849' if major else '#1b232f',
+                             width=2 if major else 1)
+
+        # Track, glow underlay, value arc
         self.create_arc(pad, pad, s - pad, s - pad,
                         start=self.START, extent=self.SWEEP,
-                        outline='#21262d', style='arc', width=10)
+                        outline='#151b25', style='arc', width=9)
+        self._glow_arc = self.create_arc(pad, pad, s - pad, s - pad,
+                                         start=self.START, extent=0,
+                                         outline=_shade(GREEN, 0.35),
+                                         style='arc', width=13, state='hidden')
+        self._val_arc = self.create_arc(pad, pad, s - pad, s - pad,
+                                        start=self.START, extent=0,
+                                        outline=self._color, style='arc',
+                                        width=5, state='hidden')
 
-        # Value arc
+        # Needle tip: halo + dot
+        self._halo = self.create_oval(0, 0, 0, 0, outline='',
+                                      fill=_shade(GREEN, 0.35))
+        self._dot = self.create_oval(0, 0, 0, 0,
+                                     fill=self._color, outline='')
+
+        self._val_txt = self.create_text(cx, cy - 5, text='0', fill=TEXT,
+                                         font=('DIN Alternate', 26, 'bold'))
+        self.create_text(cx, cy + 17, text=unit.upper(), fill=DIM,
+                         font=('Menlo', 8))
+        self.create_text(cx, s + 14, text=' '.join(label.upper()),
+                         fill=DIM, font=('Menlo', 8))
+        self._render()
+
+    def set_value(self, value, color=None):
+        if color:
+            self._color = color
+        self._target = float(value)
+        if not self._anim_running:
+            self._anim_running = True
+            self._animate()
+
+    def _animate(self):
+        """Glide toward the target value (ease-out) instead of jumping."""
+        try:
+            diff = self._target - self._value
+            snap = max((self.max_val - self.min_val) * 0.002, 0.01)
+            if abs(diff) <= snap:
+                self._value = self._target
+                self._render()
+                self._anim_running = False
+                return
+            self._value += diff * 0.30
+            self._render()
+            self.after(40, self._animate)
+        except tk.TclError:        # widget destroyed mid-animation
+            self._anim_running = False
+
+    def _render(self):
+        s, pad = self.size, self._pad
+        cx, cy = s // 2, s // 2
         range_ = self.max_val - self.min_val or 1
         pct = max(0.0, min(1.0, (self._value - self.min_val) / range_))
+        glow = _shade(self._color, 0.35)
+
         if pct > 0.005:
-            self.create_arc(pad, pad, s - pad, s - pad,
-                            start=self.START, extent=self.SWEEP * pct,
-                            outline=self._color, style='arc', width=10)
+            ext = self.SWEEP * pct
+            self.itemconfigure(self._glow_arc, extent=ext,
+                               outline=glow, state='normal')
+            self.itemconfigure(self._val_arc, extent=ext,
+                               outline=self._color, state='normal')
+        else:
+            self.itemconfigure(self._glow_arc, state='hidden')
+            self.itemconfigure(self._val_arc, state='hidden')
 
-        # Needle tip dot
-        angle_deg = self.START + self.SWEEP * pct
-        angle_rad = math.radians(angle_deg)
-        r = s // 2 - pad
-        nx = cx + r * math.cos(angle_rad)
-        ny = cy - r * math.sin(angle_rad)
-        self.create_oval(nx - 4, ny - 4, nx + 4, ny + 4,
-                         fill=self._color, outline='')
-
-        # Value text
-        val_str = f'{self._value:.0f}'
-        self.create_text(cx, cy - 6, text=val_str, fill=TEXT,
-                         font=('SF Pro Display', 20, 'bold'))
-        self.create_text(cx, cy + 14, text=self.unit, fill=DIM,
-                         font=('SF Pro Display', 10))
-
-        # Label
-        self.create_text(cx, s + 13, text=self.label, fill=DIM,
-                         font=('SF Pro Display', 10))
+        a = math.radians(self.START + self.SWEEP * pct)
+        r = s / 2 - pad
+        nx = cx + r * math.cos(a)
+        ny = cy - r * math.sin(a)
+        self.coords(self._halo, nx - 7, ny - 7, nx + 7, ny + 7)
+        self.coords(self._dot, nx - 3.5, ny - 3.5, nx + 3.5, ny + 3.5)
+        self.itemconfigure(self._halo, fill=glow)
+        self.itemconfigure(self._dot, fill=self._color)
+        self.itemconfigure(self._val_txt, text='{:.0f}'.format(self._value))
 
 
 # ── Stat card ─────────────────────────────────────────────────────────────────
 class StatCard(tk.Frame):
-    def __init__(self, parent, title, **kw):
+    def __init__(self, parent, title, accent=ACCENT, **kw):
         outer = tk.Frame(parent, bg=BORDER, padx=1, pady=1)
-        super().__init__(outer, bg=CARD, padx=12, pady=10, **kw)
+        super().__init__(outer, bg=CARD, padx=14, pady=11, **kw)
         super().pack(fill='both', expand=True)
         self._outer = outer
 
-        tk.Label(self, text=title, bg=CARD, fg=DIM,
-                 font=('SF Pro Display', 9)).pack(anchor='w')
+        tk.Frame(self, bg=accent, height=2, width=28).pack(anchor='w')
+        tk.Frame(self, bg=CARD, height=6).pack()
+        tk.Label(self, text=title.upper(), bg=CARD, fg=DIM,
+                 font=('Menlo', 8)).pack(anchor='w')
         self.val_var = tk.StringVar(value='—')
         self.val_lbl = tk.Label(self, textvariable=self.val_var,
                                 bg=CARD, fg=TEXT,
-                                font=('SF Pro Display', 17, 'bold'))
+                                font=('DIN Alternate', 21, 'bold'))
         self.val_lbl.pack(anchor='w')
         self.sub_var = tk.StringVar()
         tk.Label(self, textvariable=self.sub_var, bg=CARD, fg=DIM,
-                 font=('SF Pro Display', 9)).pack(anchor='w')
+                 font=('Menlo', 8)).pack(anchor='w')
 
     def grid_outer(self, **kw):
         self._outer.grid(**kw)
@@ -199,11 +262,16 @@ class DashboardApp:
         self.root.minsize(720, 520)
 
         self.monitor = SystemMonitor()
-        self.temp_alert_var = tk.DoubleVar(value=80.0)
-        self.alert_enabled = tk.BooleanVar(value=True)
-        self.monitor.on_high_temp = self._on_high_temp
-        self.monitor.temp_alert = 80.0
+        self._cfg = load_config()
+        self.temp_alert_var = tk.DoubleVar(
+            value=self._cfg.get('alert_temp', 80.0))
+        self.alert_enabled = tk.BooleanVar(
+            value=self._cfg.get('alert_enabled', True))
+        self.monitor.on_high_temp = (
+            self._on_high_temp if self.alert_enabled.get() else None)
+        self.monitor.temp_alert = self.temp_alert_var.get()
 
+        self._tick = 0
         self._build_ui()
         self.monitor.start()
         self._start_menubar()
@@ -232,23 +300,43 @@ class DashboardApp:
 
     def _build_ui(self):
         # Header bar
-        hdr = tk.Frame(self.root, bg='#010409', height=48)
+        hdr = tk.Frame(self.root, bg='#04070b', height=56)
         hdr.pack(fill='x')
         hdr.pack_propagate(False)
-        tk.Label(hdr, text='FanCooler', bg='#010409', fg=TEXT,
-                 font=('SF Pro Display', 14, 'bold')).pack(side='left', padx=20, pady=12)
-        self.status_lbl = tk.Label(hdr, text='* Monitoring', bg='#010409', fg=GREEN,
-                                   font=('SF Pro Display', 10))
-        self.status_lbl.pack(side='right', padx=20)
 
-        tk.Frame(self.root, bg=BORDER, height=1).pack(fill='x')
+        brand = tk.Frame(hdr, bg='#04070b')
+        brand.pack(side='left', padx=20)
+        brand_row = tk.Frame(brand, bg='#04070b')
+        brand_row.pack(anchor='w', pady=(9, 0))
+        tk.Label(brand_row, text='FAN', bg='#04070b', fg=TEXT,
+                 font=('DIN Alternate', 20, 'bold')).pack(side='left')
+        tk.Label(brand_row, text='COOLER', bg='#04070b', fg=ACCENT,
+                 font=('DIN Alternate', 20, 'bold')).pack(side='left')
+        tk.Label(brand, text='T H E R M A L   C O N T R O L',
+                 bg='#04070b', fg=DIM, font=('Menlo', 7)).pack(anchor='w')
+
+        status = tk.Frame(hdr, bg='#04070b')
+        status.pack(side='right', padx=20)
+        self._pulse_dot = tk.Canvas(status, width=10, height=10,
+                                    bg='#04070b', highlightthickness=0)
+        self._pulse_item = self._pulse_dot.create_oval(
+            2, 2, 8, 8, fill=GREEN, outline='')
+        self._pulse_dot.pack(side='left')
+        self.status_lbl = tk.Label(status, text=' MONITORING',
+                                   bg='#04070b', fg=GREEN,
+                                   font=('Menlo', 9))
+        self.status_lbl.pack(side='left')
+        self._pulse_on = True
+        self._pulse()
+
+        tk.Frame(self.root, bg='#0c3340', height=2).pack(fill='x')
 
         # Notebook
         style = ttk.Style()
         style.theme_use('default')
         style.configure('FC.TNotebook', background=BG, borderwidth=0, tabmargins=0)
-        style.configure('FC.TNotebook.Tab', background='#161b22', foreground=DIM,
-                        padding=[18, 8], font=('SF Pro Display', 11))
+        style.configure('FC.TNotebook.Tab', background='#10151d', foreground=DIM,
+                        padding=[20, 9], font=('Menlo', 10))
         style.map('FC.TNotebook.Tab',
                   background=[('selected', CARD)],
                   foreground=[('selected', TEXT)])
@@ -261,9 +349,21 @@ class DashboardApp:
         self._build_fanctrl_tab()
         self._build_settings_tab()
 
+    def _pulse(self):
+        """Blink the header status dot — instrument 'alive' indicator."""
+        try:
+            self._pulse_on = not self._pulse_on
+            self._pulse_dot.itemconfigure(
+                self._pulse_item,
+                fill=GREEN if self._pulse_on else '#16482b')
+            self.root.after(700, self._pulse)
+        except tk.TclError:
+            pass
+
     def _build_dashboard_tab(self):
         tab = tk.Frame(self.nb, bg=BG)
-        self.nb.add(tab, text='  Dashboard  ')
+        self._tab_dash = tab
+        self.nb.add(tab, text='  DASHBOARD  ')
 
         # Gauges
         gauge_row = tk.Frame(tab, bg=BG)
@@ -284,16 +384,16 @@ class DashboardApp:
         cards.pack(fill='x', padx=24, pady=6)
         cards.columnconfigure((0, 1, 2, 3), weight=1, uniform='c')
 
-        self.c_freq = StatCard(cards, 'CPU FREQUENCY')
+        self.c_freq = StatCard(cards, 'CPU Frequency', accent=ACCENT)
         self.c_freq.grid_outer(row=0, column=0, sticky='nsew', padx=(0, 8))
 
-        self.c_temp = StatCard(cards, 'TEMPERATURE')
+        self.c_temp = StatCard(cards, 'Temperature', accent=ORANGE)
         self.c_temp.grid_outer(row=0, column=1, sticky='nsew', padx=(0, 8))
 
-        self.c_fan = StatCard(cards, 'FAN SPEED')
+        self.c_fan = StatCard(cards, 'Fan Speed', accent=BLUE)
         self.c_fan.grid_outer(row=0, column=2, sticky='nsew', padx=(0, 8))
 
-        self.c_mem = StatCard(cards, 'MEMORY USED')
+        self.c_mem = StatCard(cards, 'Memory Used', accent=GREEN)
         self.c_mem.grid_outer(row=0, column=3, sticky='nsew')
 
         # Footer info bar
@@ -301,18 +401,19 @@ class DashboardApp:
         foot.pack(fill='x', side='bottom')
         tk.Frame(foot, bg=BORDER, height=1).pack(fill='x')
         self.info_lbl = tk.Label(foot, text='', bg=CARD, fg=DIM,
-                                 font=('SF Pro Display', 10), anchor='w',
+                                 font=('Helvetica Neue', 11), anchor='w',
                                  padx=16, pady=6)
         self.info_lbl.pack(fill='x')
 
     def _build_graph_tab(self):
         tab = tk.Frame(self.nb, bg=BG)
-        self.nb.add(tab, text='  History  ')
+        self._tab_graph = tab
+        self.nb.add(tab, text='  HISTORY  ')
 
         if not HAS_MPL:
             tk.Label(tab,
                      text='matplotlib not installed.\n\nRun:  pip install matplotlib',
-                     bg=BG, fg=DIM, font=('SF Pro Display', 13)).pack(expand=True)
+                     bg=BG, fg=DIM, font=('Helvetica Neue', 13)).pack(expand=True)
             return
 
         matplotlib.rcParams.update({
@@ -334,10 +435,15 @@ class DashboardApp:
         self.ax_temp = self.fig.add_subplot(3, 1, 2)
         self.ax_fan  = self.fig.add_subplot(3, 1, 3)
 
+        fan_top = 6500
+        fans = self.monitor.fan_ctrl.get_fan_info()
+        if fans:
+            fan_top = max(f[2] for f in fans) + 300
+
         graph_specs = [
             (self.ax_cpu,  'CPU %',   (0, 100), ACCENT),
             (self.ax_temp, 'Temp °C', None,     ORANGE),
-            (self.ax_fan,  'Fan RPM', (0, 6200), BLUE),
+            (self.ax_fan,  'Fan RPM', (0, fan_top), BLUE),
         ]
         self._graph_lines = []
         self._graph_fills = []
@@ -353,7 +459,7 @@ class DashboardApp:
                 ax.set_ylim(*ylim)
             line, = ax.plot([], [], color=color, linewidth=2,
                             solid_capstyle='round', animated=False)
-            fill = ax.fill_between([], [], alpha=0.12, color=color)
+            fill = ax.fill_between([], [], alpha=0.18, color=color)
             self._graph_lines.append(line)
             self._graph_fills.append((ax, color))
             self._graph_axes.append((ax, ylim))
@@ -369,7 +475,8 @@ class DashboardApp:
     def _build_fanctrl_tab(self):
         fc = self.monitor.fan_ctrl          # shorthand
         tab = tk.Frame(self.nb, bg=BG)
-        self.nb.add(tab, text='  Fan Control  ')
+        self._tab_fan = tab
+        self.nb.add(tab, text='  FAN CONTROL  ')
 
         canvas = tk.Canvas(tab, bg=BG, highlightthickness=0)
         scroll = tk.Scrollbar(tab, orient='vertical', command=canvas.yview)
@@ -395,25 +502,25 @@ class DashboardApp:
         row1 = tk.Frame(status_card, bg=CARD)
         row1.pack(fill='x')
         tk.Label(row1, text='Tool:', bg=CARD, fg=DIM,
-                 font=('SF Pro Display', 11)).pack(side='left')
+                 font=('Helvetica Neue', 12)).pack(side='left')
         if fc.available:
-            tool_txt = 'smcFanControl ready'
+            tool_txt = 'smc_tool ready ({} fans)'.format(fc.num_fans)
             tool_clr = GREEN
         else:
-            tool_txt = 'smcFanControl not installed'
+            tool_txt = 'smc_tool not found'
             tool_clr = RED
         self.fc_tool_lbl = tk.Label(row1, text=tool_txt, bg=CARD, fg=tool_clr,
-                                    font=('SF Pro Display', 11, 'bold'))
+                                    font=('Menlo', 11, 'bold'))
         self.fc_tool_lbl.pack(side='left', padx=8)
 
         self.fc_mode_lbl = tk.Label(status_card, text='Mode: Auto',
                                     bg=CARD, fg=DIM,
-                                    font=('SF Pro Display', 10))
+                                    font=('Helvetica Neue', 11))
         self.fc_mode_lbl.pack(anchor='w', pady=(4, 0))
 
         self.fc_status_lbl = tk.Label(status_card, text='',
                                       bg=CARD, fg=ACCENT,
-                                      font=('SF Pro Display', 10))
+                                      font=('Helvetica Neue', 11))
         self.fc_status_lbl.pack(anchor='w')
 
         # ── One-time sudo setup row ────────────────────────────────
@@ -421,27 +528,27 @@ class DashboardApp:
         setup_row = tk.Frame(status_card, bg=CARD)
         setup_row.pack(fill='x')
         tk.Label(setup_row, text='Sudo access:', bg=CARD, fg=DIM,
-                 font=('SF Pro Display', 11)).pack(side='left')
+                 font=('Helvetica Neue', 12)).pack(side='left')
 
         if fc.is_setup:
             self.fc_sudo_lbl = tk.Label(setup_row,
                                         text='No password needed',
                                         bg=CARD, fg=GREEN,
-                                        font=('SF Pro Display', 11, 'bold'))
+                                        font=('Menlo', 11, 'bold'))
             self.fc_sudo_lbl.pack(side='left', padx=8)
             self.fc_setup_btn = None
         else:
             self.fc_sudo_lbl = tk.Label(setup_row,
                                         text='Password required each time',
                                         bg=CARD, fg=YELLOW,
-                                        font=('SF Pro Display', 11))
+                                        font=('Helvetica Neue', 12))
             self.fc_sudo_lbl.pack(side='left', padx=8)
             self.fc_setup_btn = tk.Button(
                 setup_row,
                 text='One-time Setup',
-                bg='#1a3a5c', fg=ACCENT, relief='flat',
+                bg='#0c3340', fg=ACCENT, relief='flat',
                 padx=12, pady=4,
-                font=('SF Pro Display', 10, 'bold'),
+                font=('Menlo', 10, 'bold'),
                 highlightbackground=ACCENT, highlightthickness=1,
                 activebackground=ACCENT, activeforeground=BG,
                 cursor='hand2',
@@ -450,59 +557,62 @@ class DashboardApp:
             tk.Label(setup_row,
                      text='  (asks once, then never again)',
                      bg=CARD, fg=DIM,
-                     font=('SF Pro Display', 9)).pack(side='left')
+                     font=('Menlo', 9)).pack(side='left')
 
         # ── Auto-boost section ─────────────────────────────────────
         tk.Label(inner, text='Auto-Boost', bg=BG, fg=TEXT,
-                 font=('SF Pro Display', 13, 'bold')).pack(**pad)
+                 font=('DIN Alternate', 15, 'bold')).pack(**pad)
         tk.Label(inner,
                  text='Automatically raise fan speed when temperature is high.',
-                 bg=BG, fg=DIM, font=('SF Pro Display', 10)).pack(**pad)
+                 bg=BG, fg=DIM, font=('Helvetica Neue', 11)).pack(**pad)
         tk.Frame(inner, bg=BG, height=8).pack()
 
-        self.fc_auto_var = tk.BooleanVar(value=False)
+        self.fc_auto_var = tk.BooleanVar(
+            value=self._cfg.get('auto_boost', False))
         tk.Checkbutton(inner, text='Enable auto-boost',
                        variable=self.fc_auto_var, bg=BG, fg=TEXT,
                        selectcolor=CARD, activebackground=BG,
-                       font=('SF Pro Display', 12),
+                       font=('Helvetica Neue', 13),
                        command=self._fc_apply_auto).pack(**pad)
 
         boost_row = tk.Frame(inner, bg=BG)
         boost_row.pack(anchor='w', padx=36, pady=6)
         tk.Label(boost_row, text='Boost when temp >', bg=BG, fg=DIM,
-                 font=('SF Pro Display', 11)).pack(side='left')
-        self.fc_thresh_var = tk.DoubleVar(value=75.0)
+                 font=('Helvetica Neue', 12)).pack(side='left')
+        self.fc_thresh_var = tk.DoubleVar(
+            value=self._cfg.get('boost_thresh', 75.0))
         tk.Scale(boost_row, from_=55, to=90, variable=self.fc_thresh_var,
                  orient='horizontal', length=160, bg=CARD, fg=TEXT,
-                 troughcolor='#21262d', highlightthickness=0,
+                 troughcolor='#19202b', highlightthickness=0,
                  activebackground=ORANGE,
                  command=self._fc_apply_auto).pack(side='left', padx=6)
         self.fc_thresh_lbl = tk.Label(boost_row, text='75C', bg=BG, fg=ORANGE,
-                                      font=('SF Pro Display', 11, 'bold'))
+                                      font=('Menlo', 11, 'bold'))
         self.fc_thresh_lbl.pack(side='left')
 
         rpm_row = tk.Frame(inner, bg=BG)
         rpm_row.pack(anchor='w', padx=36, pady=6)
         tk.Label(rpm_row, text='Boost to RPM:', bg=BG, fg=DIM,
-                 font=('SF Pro Display', 11)).pack(side='left')
-        self.fc_boost_rpm_var = tk.IntVar(value=4000)
+                 font=('Helvetica Neue', 12)).pack(side='left')
+        self.fc_boost_rpm_var = tk.IntVar(
+            value=self._cfg.get('boost_rpm', 4000))
         tk.Scale(rpm_row, from_=1200, to=6200, variable=self.fc_boost_rpm_var,
                  orient='horizontal', length=160, bg=CARD, fg=TEXT,
-                 troughcolor='#21262d', highlightthickness=0,
+                 troughcolor='#19202b', highlightthickness=0,
                  activebackground=BLUE, resolution=100,
                  command=self._fc_apply_auto).pack(side='left', padx=6)
         self.fc_boost_rpm_lbl = tk.Label(rpm_row, text='4000 RPM', bg=BG, fg=BLUE,
-                                         font=('SF Pro Display', 11, 'bold'))
+                                         font=('Menlo', 11, 'bold'))
         self.fc_boost_rpm_lbl.pack(side='left')
 
         tk.Frame(inner, bg=BORDER, height=1, width=500).pack(anchor='w', padx=36, pady=14)
 
         # ── Manual control section ─────────────────────────────────
         tk.Label(inner, text='Manual Fan Speed', bg=BG, fg=TEXT,
-                 font=('SF Pro Display', 13, 'bold')).pack(**pad)
+                 font=('DIN Alternate', 15, 'bold')).pack(**pad)
         tk.Label(inner,
                  text='Set minimum fan RPM directly. "Auto" hands control back to macOS.',
-                 bg=BG, fg=DIM, font=('SF Pro Display', 10)).pack(**pad)
+                 bg=BG, fg=DIM, font=('Helvetica Neue', 11)).pack(**pad)
         tk.Frame(inner, bg=BG, height=10).pack()
 
         # Preset buttons — bright colors so they're clearly clickable
@@ -510,11 +620,11 @@ class DashboardApp:
         preset_row.pack(anchor='w', padx=36, pady=4)
         self._preset_btns = {}
         preset_colors = {
-            'Auto':        ('#30363d', TEXT),
-            'Eco':         ('#1f4e2a', GREEN),
-            'Normal':      ('#1a3a5c', ACCENT),
-            'Performance': ('#4a3000', YELLOW),
-            'Max':         ('#4a1500', RED),
+            'Auto':        ('#202938', TEXT),
+            'Eco':         ('#0f3322', GREEN),
+            'Normal':      ('#0c3340', ACCENT),
+            'Performance': ('#3a2a0c', YELLOW),
+            'Max':         ('#3a1414', RED),
         }
         for name, rpm in [('Auto', 0), ('Eco', 1200),
                           ('Normal', 2500), ('Performance', 4000), ('Max', 6200)]:
@@ -524,7 +634,7 @@ class DashboardApp:
                 preset_row,
                 text='{}\n{}'.format(name, sub),
                 bg=bg_c, fg=fg_c, relief='flat', padx=14, pady=10,
-                font=('SF Pro Display', 10, 'bold'),
+                font=('Menlo', 10, 'bold'),
                 highlightbackground=fg_c, highlightthickness=1,
                 activebackground=fg_c, activeforeground=BG,
                 cursor='hand2',
@@ -536,14 +646,16 @@ class DashboardApp:
         man_row = tk.Frame(inner, bg=BG)
         man_row.pack(anchor='w', padx=36, pady=10)
         tk.Label(man_row, text='Custom RPM:', bg=BG, fg=DIM,
-                 font=('SF Pro Display', 11)).pack(side='left')
-        self.fc_man_rpm_var = tk.IntVar(value=2500)
+                 font=('Helvetica Neue', 12)).pack(side='left')
+        self.fc_man_rpm_var = tk.IntVar(
+            value=self._cfg.get('manual_rpm', 2500))
         tk.Scale(man_row, from_=0, to=6200, variable=self.fc_man_rpm_var,
                  orient='horizontal', length=220, bg=CARD, fg=TEXT,
-                 troughcolor='#21262d', highlightthickness=0,
+                 troughcolor='#19202b', highlightthickness=0,
                  activebackground=ACCENT, resolution=100).pack(side='left', padx=6)
-        self.fc_man_rpm_lbl = tk.Label(man_row, text='2500 RPM', bg=BG, fg=ACCENT,
-                                       font=('SF Pro Display', 11, 'bold'))
+        self.fc_man_rpm_lbl = tk.Label(
+            man_row, text='{} RPM'.format(self.fc_man_rpm_var.get()),
+            bg=BG, fg=ACCENT, font=('Menlo', 11, 'bold'))
         self.fc_man_rpm_lbl.pack(side='left')
         self.fc_man_rpm_var.trace('w', self._fc_update_man_lbl)
 
@@ -552,13 +664,13 @@ class DashboardApp:
         btn_row.pack(anchor='w', padx=36, pady=8)
         self.fc_apply_btn = tk.Button(
             btn_row, text='Apply', bg=ACCENT, fg=BG, relief='flat',
-            padx=20, pady=7, font=('SF Pro Display', 11, 'bold'),
-            activebackground='#79c0ff', activeforeground=BG, cursor='hand2',
+            padx=20, pady=7, font=('Menlo', 11, 'bold'),
+            activebackground='#6ab8ff', activeforeground=BG, cursor='hand2',
             command=self._fc_apply_manual)
         self.fc_apply_btn.pack(side='left', padx=(0, 10))
         self.fc_reset_btn = tk.Button(
-            btn_row, text='Reset to Auto', bg='#1a3a2a', fg=GREEN, relief='flat',
-            padx=20, pady=7, font=('SF Pro Display', 11, 'bold'),
+            btn_row, text='Reset to Auto', bg='#0f3322', fg=GREEN, relief='flat',
+            padx=20, pady=7, font=('Menlo', 11, 'bold'),
             highlightbackground=GREEN, highlightthickness=1, cursor='hand2',
             command=self._fc_reset)
         self.fc_reset_btn.pack(side='left')
@@ -570,12 +682,15 @@ class DashboardApp:
             note.pack(anchor='w', padx=36, pady=4)
             tk.Label(note,
                      text='smc_tool not found in app directory.',
-                     bg=BG, fg=RED, font=('SF Pro Display', 11, 'bold')).pack(anchor='w')
+                     bg=BG, fg=RED, font=('Menlo', 11, 'bold')).pack(anchor='w')
             tk.Label(note,
                      text='Re-clone the repo or copy smc_tool next to dashboard.py.',
-                     bg=BG, fg=DIM, font=('SF Pro Display', 10)).pack(anchor='w', pady=2)
+                     bg=BG, fg=DIM, font=('Helvetica Neue', 11)).pack(anchor='w', pady=2)
 
         tk.Frame(inner, bg=BG, height=24).pack()   # bottom padding
+
+        # Push loaded config into the controller and sync labels
+        self._fc_apply_auto()
 
         # Disable controls if tool not available
         if not fc.available:
@@ -583,44 +698,58 @@ class DashboardApp:
 
     def _build_settings_tab(self):
         tab = tk.Frame(self.nb, bg=BG)
-        self.nb.add(tab, text='  Settings  ')
+        self.nb.add(tab, text='  SETTINGS  ')
 
         inner = tk.Frame(tab, bg=BG)
         inner.pack(padx=40, pady=28, anchor='nw')
 
         # Alert section
         tk.Label(inner, text='Temperature Alerts', bg=BG, fg=TEXT,
-                 font=('SF Pro Display', 14, 'bold')).pack(anchor='w', pady=(0, 14))
+                 font=('DIN Alternate', 16, 'bold')).pack(anchor='w', pady=(0, 14))
 
         tk.Checkbutton(inner, text='Enable alerts when temperature exceeds threshold',
                        variable=self.alert_enabled, bg=BG, fg=TEXT,
                        selectcolor=CARD, activebackground=BG, activeforeground=TEXT,
-                       font=('SF Pro Display', 12),
+                       font=('Helvetica Neue', 13),
                        command=self._apply_alert_settings).pack(anchor='w', pady=2)
 
         row = tk.Frame(inner, bg=BG)
         row.pack(anchor='w', pady=10)
         tk.Label(row, text='Alert at:', bg=BG, fg=DIM,
-                 font=('SF Pro Display', 12)).pack(side='left', padx=(0, 10))
+                 font=('Helvetica Neue', 13)).pack(side='left', padx=(0, 10))
         self.alert_scale = tk.Scale(
             row, from_=50, to=100, variable=self.temp_alert_var,
             orient='horizontal', length=220, bg=CARD, fg=TEXT,
-            troughcolor='#21262d', highlightthickness=0,
+            troughcolor='#19202b', highlightthickness=0,
             activebackground=ACCENT, command=self._apply_alert_settings)
         self.alert_scale.pack(side='left')
         self.alert_val_lbl = tk.Label(row, text='80°C', bg=BG, fg=ORANGE,
-                                      font=('SF Pro Display', 12, 'bold'))
+                                      font=('Menlo', 12, 'bold'))
         self.alert_val_lbl.pack(side='left', padx=10)
 
         tk.Frame(inner, bg=BORDER, height=1, width=440).pack(anchor='w', pady=18)
 
         # System info section
         tk.Label(inner, text='System Info', bg=BG, fg=TEXT,
-                 font=('SF Pro Display', 14, 'bold')).pack(anchor='w', pady=(0, 12))
+                 font=('DIN Alternate', 16, 'bold')).pack(anchor='w', pady=(0, 12))
         self.sys_info_lbl = tk.Label(inner, text='', bg=BG, fg=DIM,
-                                     font=('SF Pro Display', 11), justify='left')
+                                     font=('Helvetica Neue', 12), justify='left')
         self.sys_info_lbl.pack(anchor='w')
         self._refresh_sys_info()
+
+    # ── Settings persistence ──────────────────────────────────────────────────
+
+    def _save_cfg(self):
+        if not hasattr(self, 'fc_man_rpm_var'):
+            return   # UI not fully built yet
+        save_config({
+            'alert_enabled': bool(self.alert_enabled.get()),
+            'alert_temp':    float(self.temp_alert_var.get()),
+            'auto_boost':    bool(self.fc_auto_var.get()),
+            'boost_thresh':  float(self.fc_thresh_var.get()),
+            'boost_rpm':     int(self.fc_boost_rpm_var.get()),
+            'manual_rpm':    int(self.fc_man_rpm_var.get()),
+        })
 
     # ── Fan Control logic ─────────────────────────────────────────────────────
 
@@ -643,6 +772,7 @@ class DashboardApp:
             text='{:.0f}C'.format(fc.boost_thresh))
         self.fc_boost_rpm_lbl.configure(
             text='{} RPM'.format(fc.boost_rpm))
+        self._save_cfg()
 
     def _fc_update_man_lbl(self, *_):
         self.fc_man_rpm_lbl.configure(
@@ -706,6 +836,7 @@ class DashboardApp:
     def _fc_apply_manual(self):
         rpm = self.fc_man_rpm_var.get()
         fc = self.monitor.fan_ctrl
+        self._save_cfg()
         self._fc_run_async(
             lambda: fc.set_min_rpm(rpm),
             on_success_msg='Min fan set to {} RPM'.format(rpm),
@@ -791,6 +922,7 @@ class DashboardApp:
         self.alert_val_lbl.configure(text=f'{val:.0f}°C')
         self.monitor.temp_alert = val
         self.monitor.on_high_temp = self._on_high_temp if self.alert_enabled.get() else None
+        self._save_cfg()
 
     def _on_high_temp(self, temp):
         self.root.after(0, lambda: self._show_alert(temp))
@@ -819,6 +951,7 @@ class DashboardApp:
 
         self.g_cpu.set_value(data['cpu'], ACCENT)
         self.g_temp.set_value(data['temp'], tc)
+        self.g_fan.max_val = max(data['fan_max'], 1)   # actual hw max
         self.g_fan.set_value(data['fan'], fc)
         self.g_mem.set_value(data['mem'], ACCENT)
 
@@ -829,8 +962,12 @@ class DashboardApp:
                            color=tc)
 
         fan_pct = int(data['fan'] / max(data['fan_max'], 1) * 100)
-        self.c_fan.update(f"{data['fan']:,} RPM",
-                          f"{fan_pct}% of max {data['fan_max']:,}")
+        fans = data.get('fans') or []
+        if len(fans) >= 2:
+            fan_sub = f"{fan_pct}%  ·  L {fans[0][0]:,} / R {fans[1][0]:,} RPM"
+        else:
+            fan_sub = f"{fan_pct}% of max {data['fan_max']:,}"
+        self.c_fan.update(f"{data['fan']:,} RPM", fan_sub)
 
         vm = psutil.virtual_memory()
         used = (vm.total - vm.available) / 1024 ** 3
@@ -839,18 +976,23 @@ class DashboardApp:
                           f"of {total:.1f} GB  ({data['mem']:.0f}%)")
 
         self.info_lbl.configure(
-            text=f"Last updated: {data.get('timestamp', '—')}  ·  Interval: 2s"
+            text=f"Last updated: {data.get('timestamp', '—')}  ·  Interval: 1s"
         )
 
-        # Fan control status update
-        if self.nb.index('current') == 2:
+        # Only refresh the visible tab's extras
+        self._tick += 1
+        try:
+            cur_tab = self.nb.nametowidget(self.nb.select())
+        except Exception:
+            cur_tab = None
+        if cur_tab is self._tab_fan:
             self._fc_update_loop()
+        elif cur_tab is self._tab_graph and HAS_MPL:
+            # matplotlib redraw is the heaviest thing here — every 2nd tick
+            if self._tick % 2 == 0:
+                self._update_graphs(hist)
 
-        # Update graphs only when that tab is visible
-        if self.nb.index('current') == 1 and HAS_MPL:
-            self._update_graphs(hist)
-
-        self.root.after(2000, self._update_loop)
+        self.root.after(1000, self._update_loop)
 
     def _update_graphs(self, hist):
         if not hist['cpu']:
@@ -872,9 +1014,9 @@ class DashboardApp:
                 ax.set_ylim(mn - pad, mx + pad)
 
             # Redraw fill (cheap: remove old, add new)
-            for coll in ax.collections:
+            for coll in list(ax.collections):
                 coll.remove()
-            ax.fill_between(x, data, alpha=0.12, color=fill_color)
+            ax.fill_between(x, data, alpha=0.18, color=fill_color)
 
         # Keep alert line in sync
         self._alert_line.set_ydata([self.monitor.temp_alert,
@@ -888,6 +1030,7 @@ class DashboardApp:
         self.root.mainloop()
 
     def _on_close(self):
+        self._save_cfg()
         self.monitor.stop()
         try:
             self._menubar_proc.terminate()

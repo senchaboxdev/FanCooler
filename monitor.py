@@ -9,8 +9,33 @@ from datetime import datetime
 
 STATE_FILE    = '/tmp/fancooler_state.json'
 SUDOERS_FILE  = '/etc/sudoers.d/fancooler'
-HISTORY_SIZE  = 60
+CONFIG_FILE   = os.path.expanduser('~/.fancooler.json')
+SMC_SYSTEM    = '/usr/local/libexec/fancooler-smc'   # root-owned copy for sudoers
+INTERVAL      = 1.0   # seconds between samples
+HISTORY_SIZE  = 600   # 10 minutes at 1s interval
 _HERE         = os.path.dirname(os.path.abspath(__file__))
+
+
+def load_config():
+    """Load persisted user settings (alert/boost thresholds etc.)."""
+    try:
+        with open(CONFIG_FILE) as f:
+            cfg = json.load(f)
+            if isinstance(cfg, dict):
+                return cfg
+    except Exception:
+        pass
+    return {}
+
+
+def save_config(cfg):
+    try:
+        tmp = CONFIG_FILE + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump(cfg, f, indent=2)
+        os.replace(tmp, CONFIG_FILE)
+    except Exception:
+        pass
 
 
 # ── Fan Controller ────────────────────────────────────────────────────────────
@@ -38,12 +63,21 @@ class FanController:
         self._boosted     = False
         self._lock        = threading.Lock()
         self.status_msg   = ''
+        self.num_fans     = len(self.get_fan_info()) or 2
         self._hw_min      = self._read_hw_min()   # hardware-default min bytes
         self._is_setup_cache = None               # None = unchecked
+        self._last_boost_fail = 0.0               # backoff after failed boost
 
     @property
     def available(self):
         return os.path.isfile(self._smc) and os.access(self._smc, os.X_OK)
+
+    @property
+    def _admin_smc(self):
+        """Path used for privileged writes — prefer the root-owned system copy
+        (safe to whitelist in sudoers); fall back to the bundled binary for
+        installs set up before the system copy existed."""
+        return SMC_SYSTEM if os.path.isfile(SMC_SYSTEM) else self._smc
 
     @property
     def is_setup(self):
@@ -57,7 +91,7 @@ class FanController:
             return False
         try:
             r = subprocess.Popen(
-                ['sudo', '-n', self._smc, '-f'],
+                ['sudo', '-n', self._admin_smc, '-f'],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             _, err = r.communicate(timeout=3)
             result = b'password' not in err.lower()
@@ -70,17 +104,33 @@ class FanController:
     def setup_sudoers(self, on_done=None):
         """One-time setup: write NOPASSWD sudoers rule via osascript.
         After this, all fan commands run silently with 'sudo -n'.
+
+        The rule whitelists a root-owned copy of smc_tool in /usr/local/libexec
+        (not the user-writable bundled binary — that would be a silent
+        root escalation for anything running as this user).
         """
         import tempfile
         user = os.environ.get('USER') or os.environ.get('LOGNAME') or 'root'
-        rule = '{} ALL=(ALL) NOPASSWD: {}'.format(user, self._smc)
+        rule = '{} ALL=(ALL) NOPASSWD: {}'.format(user, SMC_SYSTEM)
 
         def _run():
-            sh = '#!/bin/sh\necho "{r}" > {f}\nchmod 440 {f}\n'.format(
-                r=rule, f=SUDOERS_FILE)
+            sh = (
+                '#!/bin/sh\n'
+                'set -e\n'
+                'mkdir -p "{libexec}"\n'
+                'cp "{src}" "{dst}"\n'
+                'chown root:wheel "{dst}"\n'
+                'chmod 755 "{dst}"\n'
+                'printf \'%s\\n\' "{rule}" > "{sudoers}.tmp"\n'
+                'chmod 440 "{sudoers}.tmp"\n'
+                'visudo -cf "{sudoers}.tmp"\n'
+                'mv "{sudoers}.tmp" "{sudoers}"\n'
+            ).format(libexec=os.path.dirname(SMC_SYSTEM),
+                     src=self._smc, dst=SMC_SYSTEM,
+                     rule=rule, sudoers=SUDOERS_FILE)
             fd, path = tempfile.mkstemp(suffix='.sh', prefix='/tmp/fc_setup_')
             try:
-                os.write(fd, sh.encode('ascii'))
+                os.write(fd, sh.encode('utf-8'))
                 os.close(fd)
                 os.chmod(path, 0o755)
                 as_cmd = ('do shell script "{}" '
@@ -114,7 +164,7 @@ class FanController:
         if not self.available:
             return defaults
         try:
-            for i in range(2):
+            for i in range(self.num_fans):
                 key = 'F{}Mn'.format(i)
                 r = subprocess.Popen([self._smc, '-k', key, '-r'],
                                      stdout=subprocess.PIPE,
@@ -134,9 +184,10 @@ class FanController:
         import struct
         return struct.pack('<f', float(rpm)).hex()
 
-    def _run_admin(self, sh_lines):
+    def _run_admin(self, commands):
         """Run smc commands with root. Uses 'sudo -n' (silent) when the
         sudoers rule is in place; otherwise shows macOS password dialog once.
+        `commands` is a list of argument lists, e.g. [[smc, '-k', 'F0Mn', ...]].
         """
         import tempfile
 
@@ -144,9 +195,8 @@ class FanController:
             # Silent path — no dialog
             combined_out = ''
             ok = True
-            for line in sh_lines:
-                cmd = ['sudo', '-n'] + line.split()
-                r = subprocess.Popen(cmd,
+            for cmd_args in commands:
+                r = subprocess.Popen(['sudo', '-n'] + cmd_args,
                                      stdout=subprocess.PIPE,
                                      stderr=subprocess.PIPE)
                 out, err = r.communicate(timeout=5)
@@ -156,10 +206,12 @@ class FanController:
             return ok, combined_out.strip()
 
         # First-time path — osascript dialog
+        sh_lines = [' '.join('"{}"'.format(a) for a in args)
+                    for args in commands]
         script_content = '#!/bin/sh\n' + '\n'.join(sh_lines) + '\n'
         fd, sh_path = tempfile.mkstemp(suffix='.sh', prefix='/tmp/fc_')
         try:
-            os.write(fd, script_content.encode('ascii'))
+            os.write(fd, script_content.encode('utf-8'))
             os.close(fd)
             os.chmod(sh_path, 0o755)
             as_cmd = ('do shell script "{}" '
@@ -187,8 +239,8 @@ class FanController:
             return False, 'smc_tool not found'
         h = self._rpm_to_hex(rpm)
         ok, msg = self._run_admin([
-            '{} -k F0Mn -w {}'.format(self._smc, h),
-            '{} -k F1Mn -w {}'.format(self._smc, h),
+            [self._admin_smc, '-k', 'F{}Mn'.format(i), '-w', h]
+            for i in range(self.num_fans)
         ])
         with self._lock:
             self.status_msg = ('Set to {} RPM'.format(int(rpm))
@@ -200,9 +252,11 @@ class FanController:
         if not self.available:
             return False, 'smc_tool not found'
         hw = self._hw_min
+        fallbacks = {0: '00409c44', 1: '00c0a844'}   # 1250 / 1350 RPM as LE float
         ok, msg = self._run_admin([
-            '{} -k F0Mn -w {}'.format(self._smc, hw.get(0, '00409c44')),
-            '{} -k F1Mn -w {}'.format(self._smc, hw.get(1, '00c0a844')),
+            [self._admin_smc, '-k', 'F{}Mn'.format(i), '-w',
+             hw.get(i, fallbacks.get(i, '00409c44'))]
+            for i in range(self.num_fans)
         ])
         with self._lock:
             self.status_msg = 'Reset to Auto' if ok else 'Reset failed'
@@ -215,7 +269,7 @@ class FanController:
         return self.reset_auto() if rpm is None else self.set_min_rpm(rpm)
 
     def get_fan_info(self):
-        """Return list of (current_rpm, min_rpm) per fan."""
+        """Return list of (current_rpm, min_rpm, max_rpm) per fan."""
         if not self.available:
             return []
         try:
@@ -224,24 +278,37 @@ class FanController:
             out, _ = r.communicate(timeout=3)
             text = out.decode('utf-8', 'ignore')
             result = []
-            for cur, mn in zip(
+            for cur, mn, mx in zip(
                 re.findall(r'Current speed\s*:\s*(\d+)', text),
                 re.findall(r'Minimum speed\s*:\s*(\d+)', text),
+                re.findall(r'Maximum speed\s*:\s*(\d+)', text),
             ):
-                result.append((int(cur), int(mn)))
+                result.append((int(cur), int(mn), int(mx)))
             return result
         except Exception:
             return []
 
     def auto_check(self, temp):
         """Called each monitor cycle — auto-boost if temp is high."""
+        import time
         if not self.auto_boost or not self.available:
             return
         if temp >= self.boost_thresh and not self._boosted:
+            if not self.is_setup:
+                # Without the sudoers rule each attempt pops a password
+                # dialog — every 2s. Ask for setup instead of spamming.
+                with self._lock:
+                    self.status_msg = ('Auto-boost needs one-time setup '
+                                       '(Fan Control tab)')
+                return
+            if time.time() - self._last_boost_fail < 60:
+                return
             ok, _ = self.set_min_rpm(self.boost_rpm)
             if ok:
                 with self._lock:
                     self._boosted = True
+            else:
+                self._last_boost_fail = time.time()
         elif temp < (self.boost_thresh - 5) and self._boosted:
             self.reset_auto()
 
@@ -263,10 +330,12 @@ class SystemMonitor:
             'temp': 0.0,
             'fan': 0,
             'fan_max': 6000,
+            'fans': [],
             'temp_source': 'estimated',
             'fan_source': 'estimated',
             'timestamp': '',
         }
+        self._temp_key = None   # SMC temp key that works on this machine
         self._lock = threading.Lock()
         self._running = False
         self._thread = None
@@ -288,7 +357,7 @@ class SystemMonitor:
         import time
         while self._running:
             self._update()
-            time.sleep(2)
+            time.sleep(INTERVAL)
 
     def _update(self):
         import time as t
@@ -297,13 +366,14 @@ class SystemMonitor:
         cpu_freq = freq.current if freq else 0.0
         mem      = psutil.virtual_memory().percent
         temp, temp_src = self._read_temp()
-        fan, fan_max, fan_src = self._read_fan()
+        fan, fan_max, fan_src, fans = self._read_fan()
         ts = datetime.now().strftime('%H:%M:%S')
 
         with self._lock:
             self.current.update({
                 'cpu': cpu, 'cpu_freq': cpu_freq, 'mem': mem,
                 'temp': temp, 'fan': fan, 'fan_max': fan_max,
+                'fans': fans,
                 'temp_source': temp_src, 'fan_source': fan_src,
                 'timestamp': ts,
             })
@@ -320,7 +390,37 @@ class SystemMonitor:
                 self._last_alert_time = t.time()
                 self.on_high_temp(temp)
 
+    def _read_smc_temp(self):
+        """Read CPU temperature directly from the SMC (no sudo needed).
+        TC0P = CPU proximity — the value tools like iStat/osx-cpu-temp report.
+        """
+        fc = self.fan_ctrl
+        if not fc.available:
+            return None
+        keys = [self._temp_key] if self._temp_key else \
+               ['TC0P', 'TC0D', 'TC0E', 'TCXC']
+        for key in keys:
+            try:
+                r = subprocess.Popen([fc._smc, '-k', key, '-r'],
+                                     stdout=subprocess.PIPE,
+                                     stderr=subprocess.PIPE)
+                out, _ = r.communicate(timeout=2)
+                m = re.search(r'\]\s+(\d+\.?\d*)',
+                              out.decode('utf-8', 'ignore'))
+                if m:
+                    val = float(m.group(1))
+                    if 0.0 < val < 120.0:
+                        self._temp_key = key
+                        return round(val, 1)
+            except Exception:
+                pass
+        return None
+
     def _read_temp(self):
+        # smc_tool — actual SMC sensor, most accurate
+        t = self._read_smc_temp()
+        if t is not None:
+            return t, 'smc_tool'
         # psutil
         try:
             temps = psutil.sensors_temperatures()
@@ -362,8 +462,8 @@ class SystemMonitor:
         fans = self.fan_ctrl.get_fan_info()
         if fans:
             avg_cur = sum(f[0] for f in fans) // len(fans)
-            max_rpm = 6336  # MacBookPro15,2 fan max
-            return avg_cur, max_rpm, 'smc_tool'
+            max_rpm = max(f[2] for f in fans) or 6336
+            return avg_cur, max_rpm, 'smc_tool', [list(f) for f in fans]
         # estimate
         temp = self.current.get('temp', 50)
         if temp < 45:
@@ -374,7 +474,7 @@ class SystemMonitor:
             speed = int(2450 + (temp - 60) * 120)
         else:
             speed = int(4250 + (temp - 75) * 140)
-        return min(speed, 6000), 6000, 'estimated'
+        return min(speed, 6000), 6000, 'estimated', []
 
     def get_current(self):
         with self._lock:

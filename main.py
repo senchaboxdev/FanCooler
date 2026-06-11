@@ -25,18 +25,11 @@ def main():
     signal.signal(signal.SIGINT,  cleanup)
     signal.signal(signal.SIGTERM, cleanup)
 
-    # Launch dashboard (foreground window)
+    # Launch dashboard (foreground window).
+    # The dashboard spawns the menu bar app itself — don't spawn it here too,
+    # or we end up with two menu bar icons.
     dashboard = subprocess.Popen([sys.executable, os.path.join(BASE, 'dashboard.py')])
     procs.append(dashboard)
-
-    # Launch menu bar (background daemon)
-    try:
-        import rumps  # noqa: F401 — check availability before launching
-        menubar = subprocess.Popen([sys.executable, os.path.join(BASE, 'menubar.py')])
-        procs.append(menubar)
-    except ImportError:
-        print("Note: 'rumps' not installed — menu bar disabled. "
-              "Install with: pip install rumps")
 
     # Keep alive until dashboard closes
     try:
