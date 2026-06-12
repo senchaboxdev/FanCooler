@@ -31,17 +31,37 @@ except ImportError:
 STATE_FILE = '/tmp/fancooler_state.json'
 BASE = os.path.dirname(os.path.abspath(__file__))
 
+FIGSP = u' '  # figure space (U+2007) — pads numerals without visual jitter
+
+
+def _find_icon():
+    """Locate the monochrome template glyph; None = text-only fallback."""
+    for p in (os.path.join(BASE, 'menubar_icon.png'),
+              '/tmp/fancooler_menubar.png'):
+        if os.path.exists(p):
+            return p
+    return None
+
 
 class FanCoolerBar(rumps.App):
     def __init__(self):
-        super(FanCoolerBar, self).__init__('Fan', quit_button=None)
+        icon = _find_icon()
+        try:
+            super(FanCoolerBar, self).__init__(
+                'FanCooler', icon=icon, template=True, quit_button=None)
+        except TypeError:  # very old rumps without template kwarg
+            super(FanCoolerBar, self).__init__(
+                'FanCooler', icon=icon, quit_button=None)
+        self._has_icon = icon is not None
+        self._set_status_title(None)
 
-        self.temp_item = rumps.MenuItem('Temp: --')
-        self.fan_item  = rumps.MenuItem('Fan:  --')
-        self.cpu_item  = rumps.MenuItem('CPU:  --')
+        self.header    = rumps.MenuItem('FanCooler — Thermal Monitor')
+        self.temp_item = rumps.MenuItem('Temperature   --')
+        self.fan_item  = rumps.MenuItem('Fan speed     --')
+        self.cpu_item  = rumps.MenuItem('CPU load      --')
 
         self.menu = [
-            rumps.MenuItem('FanCooler'),
+            self.header,
             None,
             self.temp_item,
             self.fan_item,
@@ -49,12 +69,26 @@ class FanCoolerBar(rumps.App):
             None,
             rumps.MenuItem('Open Dashboard', callback=self.open_dashboard),
             None,
-            rumps.MenuItem('Quit', callback=rumps.quit_application),
+            rumps.MenuItem('Quit FanCooler', callback=rumps.quit_application),
         ]
-        self.menu['FanCooler'].set_callback(None)
+        self.header.set_callback(None)  # disabled header line
 
         self._dash_proc = None
         rumps.Timer(self._refresh, 1).start()
+
+    def _set_status_title(self, temp):
+        """Glanceable status-bar title: icon + padded temp, with tasteful
+        escalation markers ('⚠' >= 70, '🔥' >= 80)."""
+        if temp is None:
+            txt = '--°'
+        elif temp >= 80:
+            txt = '🔥{:{f}>2.0f}°'.format(temp, f=FIGSP)
+        elif temp >= 70:
+            txt = '⚠{:{f}>2.0f}°'.format(temp, f=FIGSP)
+        else:
+            txt = '{:{f}>2.0f}°'.format(temp, f=FIGSP)
+        # leading space separates text from the glyph; text-only gets a label
+        self.title = ' ' + txt if self._has_icon else 'Fan ' + txt
 
     def _refresh(self, _=None):
         try:
@@ -62,10 +96,10 @@ class FanCoolerBar(rumps.App):
                 return
             # Stale state = dashboard not running (crashed or quit)
             if time.time() - os.path.getmtime(STATE_FILE) > 10:
-                self.title = 'Fan --'
-                self.temp_item.title = 'Temp: -- (dashboard not running)'
-                self.fan_item.title  = 'Fan:  --'
-                self.cpu_item.title  = 'CPU:  --'
+                self._set_status_title(None)
+                self.temp_item.title = 'Dashboard not running'
+                self.fan_item.title  = 'Fan speed     --'
+                self.cpu_item.title  = 'CPU load      --'
                 return
             with open(STATE_FILE) as f:
                 data = json.load(f)
@@ -75,21 +109,18 @@ class FanCoolerBar(rumps.App):
             cpu  = data.get('cpu', 0.0)
             fans = data.get('fans') or []
 
-            self.temp_item.title = 'Temp: {:.1f}°C'.format(temp)
+            self.temp_item.title = 'Temperature   {:{f}>5.1f} °C'.format(
+                temp, f=FIGSP)
             if len(fans) >= 2:
-                self.fan_item.title = 'Fan:  {:,} / {:,} RPM'.format(
-                    fans[0][0], fans[1][0])
+                self.fan_item.title = 'Fan speed     {:{f}>5,} / {:{f}>5,} RPM'.format(
+                    fans[0][0], fans[1][0], f=FIGSP)
             else:
-                self.fan_item.title = 'Fan:  {:,} RPM'.format(fan)
-            self.cpu_item.title  = 'CPU:  {:.1f}%'.format(cpu)
+                self.fan_item.title = 'Fan speed     {:{f}>5,} RPM'.format(
+                    fan, f=FIGSP)
+            self.cpu_item.title = 'CPU load      {:{f}>5.1f} %'.format(
+                cpu, f=FIGSP)
 
-            if temp >= 80:
-                status = 'HOT'
-            elif temp >= 70:
-                status = 'WRM'
-            else:
-                status = 'Fan'
-            self.title = '{} {:.0f}°'.format(status, temp)
+            self._set_status_title(temp)
         except Exception:
             pass
 
