@@ -29,9 +29,9 @@ def _try_acquire_lock():
 def _bring_to_front():
     """Raise the existing window via AppleScript."""
     for script in [
-        'tell application "FanCooler" to activate',
+        'tell application "ClaudeCooler" to activate',
         'tell application "System Events" to set frontmost of '
-        '(first process whose bundle identifier is "com.senchabox.fancooler") to true',
+        '(first process whose bundle identifier is "com.senchabox.claudecooler") to true',
     ]:
         try:
             subprocess.run(['osascript', '-e', script],
@@ -72,6 +72,8 @@ RED       = '#d23c3c'
 BLUE      = '#3d80df'
 TEAL      = '#0e8c8c'
 GRAPHITE  = '#8e9aab'
+CLAUDE    = '#d97757'   # Claude coral — mascot mark
+CLAUDE_DK = '#b35a3b'   # shaded coral for lower rays (light from above)
 
 # ── Typography — classic OS X system fonts ────────────────────────────────────
 #   Lucida Grande — the Aqua-era system font: headers, body, buttons, tabs
@@ -147,6 +149,41 @@ def _round_rect_pts(x0, y0, x1, y1, r, corners=(1, 1, 1, 1)):
         else:
             pts += [c[0], c[1], c[0], c[1], c[0], c[1]]
     return pts
+
+
+# ── Claude starburst mascot (brand mark) ──────────────────────────────────────
+# Irregular radial burst — tapered rays of slightly varying length, organic
+# rather than geometric. 10 chunky rays so the mark stays crisp on a
+# non-antialiased Tk canvas at header size.
+_MASCOT_RAYS = [
+    (90, 1.00), (126, 0.78), (161, 0.95), (197, 0.76), (233, 0.97),
+    (270, 0.82), (305, 0.92), (341, 0.77), (17, 0.96), (54, 0.79),
+]
+
+
+def draw_starburst(c, cx, cy, r, tags=()):
+    """Draw the Claude starburst on a Tk Canvas — coral tapered rays with
+    darker-coral shading on the lower rays plus a 1px white etch below,
+    matching the etched-title treatment on the brushed-metal header."""
+    def ray_pts(dy, ang, frac):
+        a  = math.radians(ang)
+        ux, uy = math.cos(a), -math.sin(a)     # ray direction (canvas y down)
+        px, py = -uy, ux                       # perpendicular
+        L = r * frac
+        w = r * 0.13 * (0.72 + 0.45 * frac)    # half-width at the widest point
+        return [cx - ux * r * 0.04,            cy + dy - uy * r * 0.04,
+                cx + ux * L * 0.38 + px * w,   cy + dy + uy * L * 0.38 + py * w,
+                cx + ux * L,                   cy + dy + uy * L,
+                cx + ux * L * 0.38 - px * w,   cy + dy + uy * L * 0.38 - py * w]
+    # etched highlight: white copy 1px below
+    for ang, frac in _MASCOT_RAYS:
+        c.create_polygon(ray_pts(1, ang, frac), fill='#ffffff',
+                         outline='', tags=tags)
+    # coral rays — lower rays take the darker shade (Aqua light-from-above)
+    for ang, frac in _MASCOT_RAYS:
+        col = CLAUDE if math.sin(math.radians(ang)) >= -0.25 else CLAUDE_DK
+        c.create_polygon(ray_pts(0, ang, frac), fill=col,
+                         outline='', tags=tags)
 
 
 # ── Pinstripe background (the Aqua signature) ─────────────────────────────────
@@ -630,7 +667,7 @@ class StatCard(tk.Frame):
 
 # ── Main application ──────────────────────────────────────────────────────────
 def _set_dock_icon():
-    """Set the Dock icon to FanCooler's fan icon (overrides Python default)."""
+    """Set the Dock icon to the ClaudeCooler icon (overrides Python default)."""
     try:
         from AppKit import NSApplication, NSImage
         icns = os.path.expanduser(
@@ -647,7 +684,7 @@ class DashboardApp:
 
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title('FanCooler')
+        self.root.title('ClaudeCooler')
         self.root.geometry('900x640')
         self.root.configure(bg=BG)
         self.root.resizable(True, True)
@@ -748,7 +785,7 @@ class DashboardApp:
         self._select_tab('dash')
 
     def _draw_header(self, _event=None):
-        """Brushed-metal vertical gradient + etched 'FanCooler' title."""
+        """Brushed metal + Claude starburst mascot + etched 'ClaudeCooler'."""
         c = self._hdr
         w = max(c.winfo_width(), 1)
         h = self.HDR_H
@@ -760,12 +797,17 @@ class DashboardApp:
         c.create_line(0, 0, w, 0, fill='#f4f4f4', tags='hdr')
         c.create_line(0, h - 1, w, h - 1, fill='#8a8a8a', tags='hdr')
         cy = h // 2
-        c.create_text(21, cy + 1, text='FanCooler', anchor='w',
+        # coral mascot mark, sized to the header, left of the title
+        draw_starburst(c, 36, cy, 17, tags='hdr')
+        tx = 60
+        c.create_text(tx + 1, cy + 1, text='ClaudeCooler', anchor='w',
                       fill='#ffffff', font=FONTS['brand'], tags='hdr')
-        c.create_text(20, cy, text='FanCooler', anchor='w',
+        c.create_text(tx, cy, text='ClaudeCooler', anchor='w',
                       fill='#3c3c3c', font=FONTS['brand'], tags='hdr')
-        c.create_text(132, cy + 2, text='Thermal control', anchor='w',
-                      fill='#6e6e6e', font=FONTS['micro'], tags='hdr')
+        bw = tkfont.Font(font=FONTS['brand']).measure('ClaudeCooler')
+        c.create_text(tx + bw + 14, cy + 2, text='Thermal control',
+                      anchor='w', fill='#6e6e6e', font=FONTS['micro'],
+                      tags='hdr')
         c.tag_lower('hdr')
         c.coords(self._hdr_status_win, w - 16, cy)
 
@@ -1426,7 +1468,7 @@ class DashboardApp:
             subprocess.run([
                 'osascript', '-e',
                 'display notification "Temperature: {:.1f}C -- above alert threshold!" '
-                'with title "FanCooler Alert" sound name "Glass"'.format(temp)
+                'with title "ClaudeCooler Alert" sound name "Glass"'.format(temp)
             ], timeout=3, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         except Exception:
             pass

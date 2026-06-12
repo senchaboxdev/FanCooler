@@ -1,9 +1,9 @@
 #!/bin/bash
-# build_app.sh — builds a self-contained FanCooler.app (universal: Intel + Apple Silicon)
+# build_app.sh — builds a self-contained ClaudeCooler.app (universal: Intel + Apple Silicon)
 # Usage: bash build_app.sh
 set -e
 PROJECT="$(cd "$(dirname "$0")" && pwd)"
-APP="$(dirname "$PROJECT")/FanCooler.app"
+APP="$(dirname "$PROJECT")/ClaudeCooler.app"
 echo "Building $APP ..."
 
 # Find Python (for icon generation only)
@@ -20,10 +20,10 @@ mkdir -p "$APP/Contents/Resources"
 # Compile universal binary launcher (Intel + Apple Silicon)
 echo "  Compiling launcher (universal)..."
 cc -arch x86_64 -arch arm64 \
-   -o "$APP/Contents/MacOS/FanCooler" \
+   -o "$APP/Contents/MacOS/ClaudeCooler" \
    "$PROJECT/launcher.c" \
-   || cc -o "$APP/Contents/MacOS/FanCooler" "$PROJECT/launcher.c"  # fallback single-arch
-chmod +x "$APP/Contents/MacOS/FanCooler"
+   || cc -o "$APP/Contents/MacOS/ClaudeCooler" "$PROJECT/launcher.c"  # fallback single-arch
+chmod +x "$APP/Contents/MacOS/ClaudeCooler"
 
 # Copy Python source into bundle
 echo "  Copying Python sources into bundle..."
@@ -41,25 +41,25 @@ cat > "$APP/Contents/Info.plist" << 'PLIST'
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key>             <string>FanCooler</string>
-    <key>CFBundleDisplayName</key>      <string>FanCooler</string>
-    <key>CFBundleIdentifier</key>       <string>com.senchabox.fancooler</string>
+    <key>CFBundleName</key>             <string>ClaudeCooler</string>
+    <key>CFBundleDisplayName</key>      <string>ClaudeCooler</string>
+    <key>CFBundleIdentifier</key>       <string>com.senchabox.claudecooler</string>
     <key>CFBundleVersion</key>          <string>1.0</string>
     <key>CFBundleShortVersionString</key><string>1.0</string>
-    <key>CFBundleExecutable</key>       <string>FanCooler</string>
+    <key>CFBundleExecutable</key>       <string>ClaudeCooler</string>
     <key>CFBundlePackageType</key>      <string>APPL</string>
     <key>CFBundleSignature</key>        <string>????</string>
     <key>CFBundleIconFile</key>         <string>AppIcon</string>
     <key>NSHighResolutionCapable</key>  <true/>
     <key>NSAppleEventsUsageDescription</key>
-        <string>FanCooler uses AppleScript to control fan speed.</string>
+        <string>ClaudeCooler uses AppleScript to control fan speed.</string>
 </dict>
 </plist>
 PLIST
 
 # Build icon
 echo "  Building icon..."
-ICONSET="/tmp/FanCooler_$$.iconset"
+ICONSET="/tmp/ClaudeCooler_$$.iconset"
 mkdir -p "$ICONSET"
 "$PYTHON" "$PROJECT/make_icon.py"
 for pair in "16:icon_16x16" "32:icon_16x16@2x" "32:icon_32x32" \

@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Generate FanCooler icons (classic Aqua gel-orb style) into /tmp.
+"""Generate ClaudeCooler icons (classic Aqua gel-orb style) into /tmp.
 
-Outputs (consumed by build_app.sh):
+Coral Claude-branded gel orb (#d97757 "Crail") with the Claude starburst
+mark in white — an irregular radial burst of tapered rays.
+
+Outputs (consumed by build_app.sh — paths are a functional contract,
+do NOT rename them):
     /tmp/icon_<size>.png        for size in 16 32 64 128 256 512 1024
     /tmp/fancooler_menubar.png  monochrome template glyph for the menu bar
 
@@ -12,53 +16,58 @@ import math
 from PIL import Image, ImageDraw, ImageFilter
 
 # ---------------------------------------------------------------- palette
-# Matches the dashboard Aqua theme: primary #2f6fce, gel #6eb2f2 -> #2b66c4
-GEL_LIGHT = (0x86, 0xc2, 0xf7)   # focus highlight inside the orb
-GEL_MID   = (0x3f, 0x86, 0xe0)   # body
-GEL_DARK  = (0x1b, 0x4e, 0xa8)   # rim
-RIM_EDGE  = (0x12, 0x3c, 0x86)   # outermost ring
+# Claude coral gel: brand color #d97757, gel range light -> dark rim
+GEL_LIGHT = (0xf0, 0xa9, 0x8c)   # focus highlight inside the orb
+GEL_MID   = (0xd9, 0x77, 0x57)   # body — Claude "Crail" coral
+GEL_DARK  = (0xa8, 0x4e, 0x2e)   # rim
+RIM_EDGE  = (0x82, 0x39, 0x1d)   # outermost ring
 
 
 def _lerp(c1, c2, t):
     return tuple(int(round(c1[i] + (c2[i] - c1[i]) * t)) for i in range(3))
 
 
-def _blade_polygon(cx, cy, r_inner, r_outer, base_deg, sweep_deg,
-                   w_peak_deg, steps=64):
-    """Swept fan-blade outline: leading edge out, trailing edge back."""
-    lead, trail = [], []
-    for i in range(steps + 1):
-        t = i / float(steps)
-        ang = base_deg + sweep_deg * t
-        rad = r_inner + (r_outer - r_inner) * t
-        # tapered at hub and tip, widest ~60% out
-        w = w_peak_deg * (0.30 + 0.70 * math.sin(math.pi * t) ** 0.85)
-        la, ta = math.radians(ang + w), math.radians(ang - w)
-        lead.append((cx + rad * math.cos(la), cy + rad * math.sin(la)))
-        trail.append((cx + rad * math.cos(ta), cy + rad * math.sin(ta)))
-    return lead + trail[::-1]
+# ------------------------------------------------------------- starburst
+# Irregular radial burst: tapered rays of slightly varying length and
+# spacing — organic, not a perfect geometric star.
+RAYS_LARGE = [   # 14 rays — full-detail mark for 64px and up
+    (90, 1.00), (113, 0.84), (139, 0.95), (168, 0.78), (193, 0.90),
+    (215, 0.99), (243, 0.81), (266, 0.92), (291, 0.85), (317, 0.98),
+    (344, 0.79), (10, 0.94), (35, 0.83), (62, 0.97),
+]
+RAYS_SMALL = [   # 10 chunkier rays — keeps the mark legible at 16/32px
+    (90, 1.00), (126, 0.78), (161, 0.95), (197, 0.76), (233, 0.97),
+    (270, 0.82), (305, 0.92), (341, 0.77), (17, 0.96), (54, 0.79),
+]
 
 
-def _fan_glyph_mask(size, cx, cy, radius, blade_w_deg, hub_frac,
-                    hole_frac, sweep_deg=58.0, blades=3):
-    """Greyscale mask (white = glyph) of swept blades + hub."""
+def _starburst_mask(size, cx, cy, radius, rays, w_frac):
+    """Greyscale mask (white = glyph) of the Claude starburst.
+
+    Each ray is a four-point spike: near-point at the center, widest at
+    ~38% of its length, pointed tip — tapered at both ends."""
     m = Image.new('L', (size, size), 0)
     d = ImageDraw.Draw(m)
-    for k in range(blades):
-        base = -90.0 + k * (360.0 / blades)
-        poly = _blade_polygon(cx, cy, radius * 0.16, radius,
-                              base, sweep_deg, blade_w_deg)
-        d.polygon(poly, fill=255)
-    hub = radius * hub_frac
+    for ang, frac in rays:
+        a = math.radians(ang)
+        ux, uy = math.cos(a), -math.sin(a)     # image y axis points down
+        px, py = -uy, ux                       # perpendicular
+        L = radius * frac
+        w = radius * w_frac * (0.72 + 0.45 * frac)
+        d.polygon([
+            (cx - ux * radius * 0.04,          cy - uy * radius * 0.04),
+            (cx + ux * L * 0.38 + px * w,      cy + uy * L * 0.38 + py * w),
+            (cx + ux * L,                      cy + uy * L),
+            (cx + ux * L * 0.38 - px * w,      cy + uy * L * 0.38 - py * w),
+        ], fill=255)
+    # small solid hub so the converging rays read as one mark
+    hub = radius * 0.10
     d.ellipse([cx - hub, cy - hub, cx + hub, cy + hub], fill=255)
-    if hole_frac > 0:
-        hole = radius * hole_frac
-        d.ellipse([cx - hole, cy - hole, cx + hole, cy + hole], fill=0)
     return m
 
 
 def _render_orb_master(canvas, detail='large'):
-    """Render the full Aqua orb + fan glyph at `canvas` px (RGBA)."""
+    """Render the full Aqua orb + starburst glyph at `canvas` px (RGBA)."""
     W = canvas
     img = Image.new('RGBA', (W, W), (0, 0, 0, 0))
 
@@ -71,7 +80,7 @@ def _render_orb_master(canvas, detail='large'):
     sw, shh = R * 1.55, R * 0.34
     sy = cy + R * 0.88
     sd.ellipse([cx - sw / 2, sy - shh / 2, cx + sw / 2, sy + shh / 2],
-               fill=(10, 20, 45, 110))
+               fill=(45, 16, 6, 110))
     sh = sh.filter(ImageFilter.GaussianBlur(R * 0.055))
     img = Image.alpha_composite(img, sh)
 
@@ -102,21 +111,21 @@ def _render_orb_master(canvas, detail='large'):
     gw, gh = R * 1.5, R * 0.85
     gy = cy + R * 0.62
     gd.ellipse([cx - gw / 2, gy - gh / 2, cx + gw / 2, gy + gh / 2],
-               fill=(160, 215, 255, 120))
+               fill=(255, 206, 178, 120))
     glow = glow.filter(ImageFilter.GaussianBlur(R * 0.10))
     glow.putalpha(Image.composite(glow.split()[3],
                                   Image.new('L', (W, W), 0), clip))
     orb = Image.alpha_composite(orb, glow)
 
-    # ---- fan glyph (white, slightly translucent) -----------------------
+    # ---- Claude starburst glyph (white) --------------------------------
     if detail == 'small':
-        blade_w, hub_f, hole_f, sweep, g_alpha = 34.0, 0.34, 0.0, 40.0, 1.0
+        rays, w_frac, g_radius, g_alpha = RAYS_SMALL, 0.135, R * 0.80, 1.0
     else:
-        blade_w, hub_f, hole_f, sweep, g_alpha = 23.0, 0.24, 0.085, 58.0, 0.93
-    gm = _fan_glyph_mask(W, cx, cy, R * 0.74, blade_w, hub_f, hole_f, sweep)
+        rays, w_frac, g_radius, g_alpha = RAYS_LARGE, 0.090, R * 0.78, 0.96
+    gm = _starburst_mask(W, cx, cy, g_radius, rays, w_frac)
     # faint dark backdrop behind glyph for depth
     shadow_glyph = gm.filter(ImageFilter.GaussianBlur(W * 0.008))
-    dark = Image.new('RGBA', (W, W), (12, 38, 92, 0))
+    dark = Image.new('RGBA', (W, W), (110, 38, 14, 0))
     dark.putalpha(shadow_glyph.point(lambda a: int(a * 0.45)))
     orb = Image.alpha_composite(orb, dark)
     white = Image.new('RGBA', (W, W), (255, 255, 255, 0))
@@ -158,12 +167,12 @@ def _render_orb_master(canvas, detail='large'):
 
 
 def _make_menubar_glyph(path, point_size=44, supersample=8):
-    """Monochrome (black on transparent) template fan for the status bar."""
+    """Monochrome (black on transparent) template starburst for the
+    status bar — rendered supersampled, then LANCZOS-downsampled."""
     S = point_size * supersample
     cx = cy = S / 2.0
-    R = S * 0.46
-    gm = _fan_glyph_mask(S, cx, cy, R, blade_w_deg=30.0, hub_frac=0.30,
-                         hole_frac=0.115, sweep_deg=48.0)
+    R = S * 0.47
+    gm = _starburst_mask(S, cx, cy, R, RAYS_SMALL, w_frac=0.13)
     out = Image.new('RGBA', (S, S), (0, 0, 0, 0))
     black = Image.new('RGBA', (S, S), (0, 0, 0, 255))
     out = Image.composite(black, out, gm)

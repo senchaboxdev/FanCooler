@@ -1,8 +1,8 @@
 /*
- * launcher.c — FanCooler.app self-contained launcher (universal binary)
+ * launcher.c — ClaudeCooler.app self-contained launcher (universal binary)
  *
  * Python files live inside the bundle at Contents/Resources/.
- * No external source folder needed — just copy FanCooler.app.
+ * No external source folder needed — just copy ClaudeCooler.app.
  *
  * Compiled as universal binary: runs on Intel AND Apple Silicon (M1/M2/M3/M4).
  */
@@ -19,7 +19,7 @@ static void safe_dirname(const char *path, char *out, size_t sz) {
 }
 
 int main(int argc, char *argv[]) {
-    /* argv[0] = .../FanCooler.app/Contents/MacOS/FanCooler */
+    /* argv[0] = .../ClaudeCooler.app/Contents/MacOS/ClaudeCooler */
     char macos[4096], contents[4096], resources[4096], script[4096];
     safe_dirname(argv[0], macos,    sizeof(macos));       /* .../Contents/MacOS */
     safe_dirname(macos,   contents, sizeof(contents));    /* .../Contents       */
@@ -27,7 +27,7 @@ int main(int argc, char *argv[]) {
     snprintf(script,    sizeof(script),    "%s/dashboard.py", resources);
 
     if (access(script, R_OK) != 0) {
-        fprintf(stderr, "FanCooler: cannot find %s\n", script);
+        fprintf(stderr, "ClaudeCooler: cannot find %s\n", script);
         return 1;
     }
 
@@ -59,7 +59,7 @@ int main(int argc, char *argv[]) {
     char *path_argv[] = { (char *)"python3", script, NULL };
     execvp("python3", path_argv);
 
-    fprintf(stderr, "FanCooler: Python 3 not found.\n"
+    fprintf(stderr, "ClaudeCooler: Python 3 not found.\n"
                     "Install: https://python.org  or  brew install python3\n");
     return 1;
 }

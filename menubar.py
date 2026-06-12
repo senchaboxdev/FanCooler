@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""FanCooler menu bar app -- runs in the Mac menu bar."""
+"""ClaudeCooler menu bar app -- runs in the Mac menu bar."""
 import subprocess
 import sys
 import os
@@ -43,19 +43,19 @@ def _find_icon():
     return None
 
 
-class FanCoolerBar(rumps.App):
+class ClaudeCoolerBar(rumps.App):
     def __init__(self):
         icon = _find_icon()
         try:
-            super(FanCoolerBar, self).__init__(
-                'FanCooler', icon=icon, template=True, quit_button=None)
+            super(ClaudeCoolerBar, self).__init__(
+                'ClaudeCooler', icon=icon, template=True, quit_button=None)
         except TypeError:  # very old rumps without template kwarg
-            super(FanCoolerBar, self).__init__(
-                'FanCooler', icon=icon, quit_button=None)
+            super(ClaudeCoolerBar, self).__init__(
+                'ClaudeCooler', icon=icon, quit_button=None)
         self._has_icon = icon is not None
         self._set_status_title(None)
 
-        self.header    = rumps.MenuItem('FanCooler — Thermal Monitor')
+        self.header    = rumps.MenuItem('ClaudeCooler — Thermal Monitor')
         self.temp_item = rumps.MenuItem('Temperature   --')
         self.fan_item  = rumps.MenuItem('Fan speed     --')
         self.cpu_item  = rumps.MenuItem('CPU load      --')
@@ -69,7 +69,7 @@ class FanCoolerBar(rumps.App):
             None,
             rumps.MenuItem('Open Dashboard', callback=self.open_dashboard),
             None,
-            rumps.MenuItem('Quit FanCooler', callback=rumps.quit_application),
+            rumps.MenuItem('Quit ClaudeCooler', callback=rumps.quit_application),
         ]
         self.header.set_callback(None)  # disabled header line
 
@@ -140,4 +140,4 @@ class FanCoolerBar(rumps.App):
 
 
 if __name__ == '__main__':
-    FanCoolerBar().run()
+    ClaudeCoolerBar().run()
